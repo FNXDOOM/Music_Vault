@@ -86,7 +86,15 @@ public class ExoPlayerService extends Service {
         Log.d(TAG, "onCreate");
         pref = new SharedPreference(this);
 
-        player = new ExoPlayer.Builder(this).build();
+        androidx.media3.common.AudioAttributes audioAttributes = new androidx.media3.common.AudioAttributes.Builder()
+                .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)
+                .build();
+
+        player = new ExoPlayer.Builder(this)
+                .setAudioAttributes(audioAttributes, true)
+                .build();
+        player.setVolume(1.0f);
         player.addListener(new androidx.media3.common.Player.Listener() {
             @Override
             public void onMediaItemTransition(@Nullable MediaItem mediaItem, int reason) {
@@ -198,6 +206,7 @@ public class ExoPlayerService extends Service {
         if (ACTION_UPDATE_STREAM.equals(action)) {
             String streamUrl = intent.getStringExtra(EXTRA_STREAM_URL);
             Playlist playlist = intent.getParcelableExtra(Constants.PLAYLIST_MODEL_KEY);
+            if (playlist == null) playlist = pref.getCurrentPlaylist();
             int position = intent.getIntExtra(Constants.CURRENT_PLAYING_SONG_POSITION, 0);
             Log.d(TAG, "ACTION_UPDATE_STREAM url=" + (streamUrl != null ? streamUrl.substring(0, Math.min(80, streamUrl.length())) : "null"));
             if (streamUrl != null && !streamUrl.isEmpty()) {
@@ -205,15 +214,12 @@ public class ExoPlayerService extends Service {
                 currentPosition = position;
                 if (playlist != null) pref.setCurrentPlaylist(playlist);
 
-                // Build MediaItem with explicit MIME type for audio/webm opus streams
+                // Build MediaItem without explicit MIME type so ExoPlayer can sniff the format (could be mp4 or webm)
                 MediaItem mediaItem = new MediaItem.Builder()
                         .setUri(Uri.parse(streamUrl))
-                        .setMimeType("audio/webm")
                         .build();
 
-                player.stop();
-                player.clearMediaItems();
-                player.addMediaItem(mediaItem);
+                player.setMediaItem(mediaItem);
                 player.prepare();
                 player.setPlayWhenReady(true);
                 Log.d(TAG, "ExoPlayer prepared and set to play");
@@ -233,6 +239,7 @@ public class ExoPlayerService extends Service {
         } else {
             // ACTION_PLAY or initial start — store playlist, stream URL arrives via UPDATE_STREAM
             Playlist playlist = intent.getParcelableExtra(Constants.PLAYLIST_MODEL_KEY);
+            if (playlist == null) playlist = pref.getCurrentPlaylist();
             if (playlist != null) {
                 currentPlaylist = playlist;
                 currentPosition = intent.getIntExtra(Constants.CURRENT_PLAYING_SONG_POSITION, 0);

@@ -119,6 +119,7 @@ public class LocalMusicFragment extends Fragment {
 
             if (cursor == null) return result;
 
+            int colId       = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID);
             int colTitle    = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE);
             int colArtist   = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST);
             int colAlbum    = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM);
@@ -127,6 +128,7 @@ public class LocalMusicFragment extends Fragment {
             int colData     = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA);
 
             while (cursor.moveToNext()) {
+                long id         = cursor.getLong(colId);
                 String path     = cursor.getString(colData);
                 String title    = cursor.getString(colTitle);
                 String artist   = cursor.getString(colArtist);
@@ -145,6 +147,8 @@ public class LocalMusicFragment extends Fragment {
                 // duration stored in seconds in Song's local constructor
                 int durationSec = (int) (durationMs / 1000);
                 Song song = new Song(title, artist, genre, album, durationSec, file);
+                // Temporarily store the _ID in the videoId field so buildPlaylist can construct the content:// URI
+                song.setVideoId(String.valueOf(id));
                 result.add(song);
             }
         } catch (Exception e) {
@@ -163,7 +167,14 @@ public class LocalMusicFragment extends Fragment {
                     s.getTitle(), s.getArtist(), s.getGenre(),
                     s.getAlbum(), (int) s.getDuration(), s.getSongFile()
             );
-            copy.setStreamUrl(Uri.fromFile(s.getSongFile()).toString());
+            // Construct the proper content:// URI instead of file:// to bypass Scoped Storage limits
+            try {
+                long id = Long.parseLong(s.getVideoId());
+                Uri contentUri = android.content.ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
+                copy.setStreamUrl(contentUri.toString());
+            } catch (Exception e) {
+                copy.setStreamUrl(Uri.fromFile(s.getSongFile()).toString());
+            }
             playable.add(copy);
         }
         return new Playlist(playable, PLAYLIST_NAME);

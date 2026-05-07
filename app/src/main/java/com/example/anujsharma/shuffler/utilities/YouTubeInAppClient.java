@@ -112,6 +112,7 @@ public class YouTubeInAppClient {
             return cached.url;
         }
 
+        /*
         try {
             String resolved = resolveBestAudioStreamUrlFromYoutubei(videoId);
             putCached(videoId, resolved);
@@ -119,6 +120,7 @@ public class YouTubeInAppClient {
         } catch (Exception ignored) {
             // fallback below
         }
+        */
 
         Exception last = null;
         Exception lastNonTlsError = null;

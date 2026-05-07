@@ -166,6 +166,10 @@ public class Song implements Parcelable {
         return (permalink != null && !permalink.isEmpty()) ? permalink : "";
     }
 
+    public void setVideoId(String videoId) {
+        this.permalink = videoId;
+    }
+
     public void setStreamUrl(String url) {
         this.streamUrl = url;
     }

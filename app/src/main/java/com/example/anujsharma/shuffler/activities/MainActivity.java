@@ -136,7 +136,6 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
         Log.d(TAG, "MainActivity.savedPlaylist exists=" + (savedPlaylist != null));
         if (savedPlaylist != null && savedPlaylist.getSongs() != null && !savedPlaylist.getSongs().isEmpty()) {
             exoIntent = new Intent(this, ExoPlayerService.class);
-            exoIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, savedPlaylist);
             exoIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, pref.getCurrentPlayingSongPosition());
             Log.d(TAG, "MainActivity.starting ExoPlayerService songs=" + savedPlaylist.getSongs().size()
                     + " position=" + pref.getCurrentPlayingSongPosition());
@@ -182,7 +181,6 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
         // Step 1: Start the service immediately while app is in foreground
         exoIntent = new Intent(this, ExoPlayerService.class);
         exoIntent.setAction(ExoPlayerService.ACTION_PLAY);
-        exoIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, playlist);
         exoIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, songPosition);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(exoIntent);
@@ -203,7 +201,6 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
             Intent updateIntent = new Intent(this, ExoPlayerService.class);
             updateIntent.setAction(ExoPlayerService.ACTION_UPDATE_STREAM);
             updateIntent.putExtra(ExoPlayerService.EXTRA_STREAM_URL, playableUrl);
-            updateIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, playlist);
             updateIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, songPosition);
             startService(updateIntent);
             ivPlay.setImageDrawable(getResources().getDrawable(R.drawable.ic_pause));
@@ -248,7 +245,6 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
         // Start ExoPlayerService as a foreground service
         exoIntent = new Intent(this, ExoPlayerService.class);
         exoIntent.setAction(ExoPlayerService.ACTION_PLAY);
-        exoIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, playlist);
         exoIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, songPosition);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(exoIntent);
@@ -261,7 +257,6 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
         Intent updateIntent = new Intent(this, ExoPlayerService.class);
         updateIntent.setAction(ExoPlayerService.ACTION_UPDATE_STREAM);
         updateIntent.putExtra(ExoPlayerService.EXTRA_STREAM_URL, fileUri);
-        updateIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, playlist);
         updateIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, songPosition);
         startService(updateIntent);
 
@@ -281,7 +276,6 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
             Intent updateIntent = new Intent(this, ExoPlayerService.class);
             updateIntent.setAction(ExoPlayerService.ACTION_UPDATE_STREAM);
             updateIntent.putExtra(ExoPlayerService.EXTRA_STREAM_URL, streamUrl);
-            updateIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, playlist);
             updateIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, songPosition);
             startService(updateIntent);
             prefetchNextSongStream(playlist, songPosition);
@@ -314,7 +308,6 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
                 Intent updateIntent = new Intent(this, ExoPlayerService.class);
                 updateIntent.setAction(ExoPlayerService.ACTION_UPDATE_STREAM);
                 updateIntent.putExtra(ExoPlayerService.EXTRA_STREAM_URL, refreshedUrl);
-                updateIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, currentPlaylist);
                 updateIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, failedPosition);
                 startService(updateIntent);
                 prefetchNextSongStream(currentPlaylist, failedPosition);
