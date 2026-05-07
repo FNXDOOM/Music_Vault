@@ -28,10 +28,13 @@ import com.example.anujsharma.shuffler.services.ExoPlayerService;
 import com.example.anujsharma.shuffler.utilities.Constants;
 import com.example.anujsharma.shuffler.utilities.DialogBoxes;
 import com.example.anujsharma.shuffler.utilities.SharedPreference;
+import com.example.anujsharma.shuffler.utilities.YouTubeInAppClient;
 import com.example.anujsharma.shuffler.utilities.Utilities;
 import com.example.anujsharma.shuffler.utilities.ZoomOutPageTransformer;
 
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class ViewSongActivity extends AppCompatActivity implements View.OnClickListener {
 
@@ -54,6 +57,8 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
     private Intent playIntent;
     private boolean isPlaying;
     private SharedPreference pref;
+    private YouTubeInAppClient youTubeInAppClient;
+    private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
 
     private long getDurationMs(Song song) {
         if (song == null) return 0L;
@@ -227,6 +232,7 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
             unbindService(musicConnection);
         }
         exoService = null;
+        networkExecutor.shutdownNow();
     }
 
     public void changeBackground(String url) {
@@ -307,6 +313,7 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
     private void initialize() {
         context = this;
         pref = new SharedPreference(context);
+        youTubeInAppClient = new YouTubeInAppClient();
         ivBackButton = findViewById(R.id.ivBackButton);
         ivShowPlaylist = findViewById(R.id.ivShowPlaylist);
         ivAddToLibrary = findViewById(R.id.ivAddToLibrary);
@@ -402,6 +409,14 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
                 startService(i);
                 return;
             }
+            Song currentSong = songs.get(currentPlayingPosition);
+            if (exoService.getPlayer() != null
+                    && exoService.getPlayer().getMediaItemCount() == 0
+                    && currentSong != null
+                    && (currentSong.getStreamUrl() == null || currentSong.getStreamUrl().isEmpty())) {
+                resolveAndStartCurrentSong(currentSong, currentPlayingPosition);
+                return;
+            }
             // FIX: use exoService.resumePlayer() / exoService.pausePlayer() instead of musicService.go() / musicService.pausePlayer()
             if (exoService.isPlaying()) {
                 exoService.pausePlayer();
@@ -437,5 +452,44 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
                 }
             }
         }
+    }
+
+    private void resolveAndStartCurrentSong(Song currentSong, int position) {
+        String videoId = currentSong.getVideoId();
+        if (videoId == null || videoId.isEmpty()) {
+            Toast.makeText(this, "Stream not available for this track", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Toast.makeText(this, "Loading stream...", Toast.LENGTH_SHORT).show();
+        networkExecutor.execute(() -> {
+            try {
+                String streamUrl = youTubeInAppClient.resolveBestAudioStreamUrl(videoId);
+                currentSong.setStreamUrl(streamUrl);
+                if (currentPlaylist != null && currentPlaylist.getSongs() != null
+                        && position >= 0 && position < currentPlaylist.getSongs().size()) {
+                    currentPlaylist.getSongs().get(position).setStreamUrl(streamUrl);
+                }
+                pref.setCurrentPlaylist(currentPlaylist);
+
+                Intent updateIntent = new Intent(ViewSongActivity.this, ExoPlayerService.class);
+                updateIntent.setAction(ExoPlayerService.ACTION_UPDATE_STREAM);
+                updateIntent.putExtra(ExoPlayerService.EXTRA_STREAM_URL, streamUrl);
+                updateIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, currentPlaylist);
+                updateIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, position);
+                startService(updateIntent);
+            } catch (Exception e) {
+                android.util.Log.e(TAG, "resolveAndStartCurrentSong failed", e);
+                String msg = e.getClass().getSimpleName();
+                if (e.getMessage() != null && !e.getMessage().isEmpty()) {
+                    msg += ": " + e.getMessage();
+                }
+                Throwable cause = e.getCause();
+                if (cause != null && cause.getMessage() != null && !cause.getMessage().isEmpty()) {
+                    msg += " | cause: " + cause.getClass().getSimpleName() + ": " + cause.getMessage();
+                }
+                final String finalMsg = msg;
+                runOnUiThread(() -> Toast.makeText(ViewSongActivity.this, "Unable to load stream: " + finalMsg, Toast.LENGTH_LONG).show());
+            }
+        });
     }
 }

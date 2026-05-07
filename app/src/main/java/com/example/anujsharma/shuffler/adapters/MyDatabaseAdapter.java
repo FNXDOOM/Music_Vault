@@ -58,7 +58,10 @@ public class MyDatabaseAdapter {
                         cursor.getLong(cursor.getColumnIndex(MySqliteHelper.ID)),
                         cursor.getString(cursor.getColumnIndex(MySqliteHelper.ARTWORK_URL)),
                         cursor.getString(cursor.getColumnIndex(MySqliteHelper.TYPE_NAME)),
-                        cursor.getString(cursor.getColumnIndex(MySqliteHelper.ARTIST_NAME)));
+                        cursor.getString(cursor.getColumnIndex(MySqliteHelper.ARTIST_NAME)),
+                        cursor.getColumnIndex(MySqliteHelper.SOURCE_ID) >= 0
+                                ? cursor.getString(cursor.getColumnIndex(MySqliteHelper.SOURCE_ID))
+                                : null);
 
                 historyList.add(history);
             } while (cursor.moveToNext());
@@ -81,6 +84,7 @@ public class MyDatabaseAdapter {
         contentValues.put(MySqliteHelper.TYPE_NAME, history.getName());
         contentValues.put(MySqliteHelper.ARTWORK_URL, history.getArtworkUrl());
         contentValues.put(MySqliteHelper.ID, history.getId());
+        contentValues.put(MySqliteHelper.SOURCE_ID, history.getSourceId());
 
         id = sqLiteDatabase.insert(MySqliteHelper.HISTORY_TABLE, null, contentValues);
         sqLiteDatabase.close();

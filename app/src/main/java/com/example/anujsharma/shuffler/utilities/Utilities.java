@@ -39,31 +39,31 @@ public class Utilities {
     }
 
     public static String getApiUrlTracksQuery(String query, int limit) {
-        return Urls.YOUTUBE_BACKEND_BASE_URL + "api/search?q=" + query;
+        return Urls.TRACKS + "?q=" + query + "&limit=" + limit + "&client_id=" + Urls.CLIENT_ID;
     }
 
     public static String getApiUrlTrackId(String songId) {
-        return Urls.YOUTUBE_BACKEND_BASE_URL + "api/song/" + songId + "/stream";
+        return Urls.TRACKS + "/" + songId + "?client_id=" + Urls.CLIENT_ID;
     }
 
     public static String getApiUrlUsersQuery(String query, int limit) {
-        return Urls.YOUTUBE_BACKEND_BASE_URL + "api/search?q=" + query;
+        return Urls.USERS + "?q=" + query + "&limit=" + limit + "&client_id=" + Urls.CLIENT_ID;
     }
 
     public static String getApiUrlUserId(String userId) {
-        return Urls.YOUTUBE_BACKEND_BASE_URL + "api/search?q=" + userId;
+        return Urls.USERS + "/" + userId + "?client_id=" + Urls.CLIENT_ID;
     }
 
     public static String getApiUrlPlaylistsQuery(String query, int limit) {
-        return Urls.YOUTUBE_BACKEND_BASE_URL + "api/search?q=" + query;
+        return Urls.PLAYLISTS + "?q=" + query + "&limit=" + limit + "&client_id=" + Urls.CLIENT_ID;
     }
 
     public static String getApiUrlPlaylistId(String playlistId) {
-        return Urls.YOUTUBE_BACKEND_BASE_URL + "api/playlist/" + playlistId;
+        return Urls.PLAYLISTS + "/" + playlistId + "?client_id=" + Urls.CLIENT_ID;
     }
 
     public static String getApiUrlTrackOfUser(String userId, int limit) {
-        return Urls.YOUTUBE_BACKEND_BASE_URL + "api/search?q=" + userId;
+        return Urls.USERS + "/" + userId + "/tracks?limit=" + limit + "&client_id=" + Urls.CLIENT_ID;
     }
 
     public static String formatInteger(int n) {

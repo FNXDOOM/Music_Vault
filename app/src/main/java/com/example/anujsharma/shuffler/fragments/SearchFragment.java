@@ -45,6 +45,7 @@ import com.example.anujsharma.shuffler.utilities.DialogBoxes;
 import com.example.anujsharma.shuffler.utilities.InternetConnection;
 import com.example.anujsharma.shuffler.utilities.SharedPreference;
 import com.example.anujsharma.shuffler.utilities.Utilities;
+import com.example.anujsharma.shuffler.utilities.YouTubeInAppClient;
 import com.example.anujsharma.shuffler.volley.RequestCallback;
 
 import java.util.ArrayList;
@@ -81,6 +82,7 @@ public class SearchFragment extends Fragment implements RequestCallback {
     private Playlist currentHistoryPlaylist;
     private ProgressBar progressBar;
     private RelativeLayout rlNoSearchHistory, rlNoSearchResultFound, rlNoInternet;
+    private YouTubeInAppClient youTubeInAppClient;
 
     public SearchFragment() {
         // Required empty public constructor
@@ -99,6 +101,7 @@ public class SearchFragment extends Fragment implements RequestCallback {
         usersDao = new UsersDao(context, this);
         playlistsDao = new PlaylistsDao(context, this);
         myDatabaseAdapter = new MyDatabaseAdapter(context);
+        youTubeInAppClient = new YouTubeInAppClient();
 
         searchSongRecyclerAdapter = new SearchSongRecyclerViewAdapter(context, new SearchSongRecyclerViewAdapter.ItemClickListener() {
             @Override
@@ -113,7 +116,7 @@ public class SearchFragment extends Fragment implements RequestCallback {
                         ((MainActivity) getActivity()).playSongInMainActivity(position, playlist);
                         String artistName = song.getUser() != null ? song.getUser().getUsername() : song.getArtist();
                         myDatabaseAdapter.addToHistory(new HybridModel(Constants.TYPE_TRACK, song.getId(),
-                                song.getSongArtwork(), song.getTitle(), artistName));
+                                song.getSongArtwork(), song.getTitle(), artistName, song.getVideoId()));
                         changeSelectedPosition(position + 1);
                         break;
                     case Constants.EACH_SONG_MENU_CLICKED:
@@ -235,7 +238,10 @@ public class SearchFragment extends Fragment implements RequestCallback {
                         history = historyList.get(position);
                         switch (history.getType()) {
                             case Constants.TYPE_TRACK:
-                                tracksDao.getTrackWithId(String.valueOf(history.getId()));
+                                String sourceId = history.getSourceId();
+                                tracksDao.getTrackWithId((sourceId != null && !sourceId.isEmpty())
+                                        ? sourceId
+                                        : String.valueOf(history.getId()));
                                 break;
                             case Constants.TYPE_USER:
                                 usersDao.getUserWithId(String.valueOf(history.getId()));
@@ -422,56 +428,29 @@ public class SearchFragment extends Fragment implements RequestCallback {
             return;
         }
         showProgressBar();
-        // Call YouTube backend in background thread
+        // In-app YouTube search (no local backend required).
         new Thread(() -> {
             try {
-                okhttp3.OkHttpClient client = new okhttp3.OkHttpClient();
-                String encodedQuery = java.net.URLEncoder.encode(query, "UTF-8");
-                okhttp3.Request request = new okhttp3.Request.Builder()
-                        .url(com.example.anujsharma.shuffler.volley.Urls.YOUTUBE_BACKEND_BASE_URL
-                                + "api/search?q=" + encodedQuery)
-                        .build();
-                okhttp3.Response response = client.newCall(request).execute();
-                if (response.isSuccessful() && response.body() != null) {
-                    String json = response.body().string();
-                    org.json.JSONObject root = new org.json.JSONObject(json);
-                    org.json.JSONArray songsArray = root.optJSONArray("songs");
-                    ArrayList<Song> fetchedSongs = new ArrayList<>();
-                    if (songsArray != null) {
-                        for (int i = 0; i < songsArray.length(); i++) {
-                            org.json.JSONObject s = songsArray.getJSONObject(i);
-                            Song song = new Song(
-                                    s.optString("id"),
-                                    s.optString("title"),
-                                    s.optString("artist"),
-                                    s.optLong("durationMs"),
-                                    s.optString("artworkUrl")
-                            );
-                            fetchedSongs.add(song);
-                        }
+                ArrayList<Song> fetchedSongs = youTubeInAppClient.searchSongs(query, 20);
+                if (getActivity() == null) return;
+                getActivity().runOnUiThread(() -> {
+                    songs.clear();
+                    songs.addAll(fetchedSongs);
+                    if (rvSearchResult.getAdapter() instanceof SearchHistoryRecyclerViewAdapter) {
+                        rvSearchResult.setAdapter(searchSongRecyclerAdapter);
                     }
-                    if (getActivity() == null) return;
-                    getActivity().runOnUiThread(() -> {
-                        songs.clear();
-                        songs.addAll(fetchedSongs);
-                        if (rvSearchResult.getAdapter() instanceof SearchHistoryRecyclerViewAdapter) {
-                            rvSearchResult.setAdapter(searchSongRecyclerAdapter);
-                        }
-                        List<Song> display = songs.size() > 10 ? songs.subList(0, 10) : songs;
-                        searchSongRecyclerAdapter.changeSongData(display);
-                        searchSongRecyclerAdapter.changeUserData(new ArrayList<>());
-                        searchSongRecyclerAdapter.changePlaylistData(new ArrayList<>());
-                        if (songs.isEmpty()) showNoSearchReultFoundMessage();
-                        else showRecyclerView();
-                    });
-                } else {
-                    if (getActivity() != null)
-                        getActivity().runOnUiThread(this::showNoSearchReultFoundMessage);
-                }
+                    List<Song> display = songs.size() > 10 ? songs.subList(0, 10) : songs;
+                    searchSongRecyclerAdapter.changeSongData(display);
+                    searchSongRecyclerAdapter.changeUserData(new ArrayList<>());
+                    searchSongRecyclerAdapter.changePlaylistData(new ArrayList<>());
+                    if (songs.isEmpty()) showNoSearchReultFoundMessage();
+                    else showRecyclerView();
+                });
             } catch (Exception e) {
-                android.util.Log.e("SearchFragment", "YouTube search error", e);
-                if (getActivity() != null)
+                android.util.Log.e("SearchFragment", "In-app YouTube search error", e);
+                if (getActivity() != null) {
                     getActivity().runOnUiThread(this::showNoSearchReultFoundMessage);
+                }
             }
         }).start();
     }

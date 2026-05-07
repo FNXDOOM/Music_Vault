@@ -21,23 +21,30 @@ public class HybridModel implements Parcelable {
         }
     };
     private int type;
-    private String artworkUrl, typeUrl, name, songArtist;
+    private String artworkUrl, typeUrl, name, songArtist, sourceId;
     private long id;
 
     public HybridModel(int type, long id, String artworkUrl, String name, String songArtist) {
+        this(type, id, artworkUrl, name, songArtist, null);
+    }
+
+    public HybridModel(int type, long id, String artworkUrl, String name, String songArtist, String sourceId) {
         this.type = type;
         this.artworkUrl = artworkUrl;
         this.id = id;
         this.name = name;
         this.songArtist = songArtist;
+        this.sourceId = sourceId;
     }
 
     protected HybridModel(Parcel in) {
         type = in.readInt();
         artworkUrl = in.readString();
-        id = in.readLong();
+        typeUrl = in.readString();
         name = in.readString();
         songArtist = in.readString();
+        sourceId = in.readString();
+        id = in.readLong();
     }
 
     public int getType() {
@@ -60,6 +67,10 @@ public class HybridModel implements Parcelable {
         return songArtist;
     }
 
+    public String getSourceId() {
+        return sourceId;
+    }
+
     @Override
     public int describeContents() {
         return 0;
@@ -72,6 +83,7 @@ public class HybridModel implements Parcelable {
         parcel.writeString(typeUrl);
         parcel.writeString(name);
         parcel.writeString(songArtist);
+        parcel.writeString(sourceId);
         parcel.writeLong(id);
     }
 }

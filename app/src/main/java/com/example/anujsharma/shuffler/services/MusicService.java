@@ -100,8 +100,17 @@ public class MusicService extends Service implements MediaPlayer.OnCompletionLis
     //release resources when unbind
     @Override
     public boolean onUnbind(Intent intent) {
-        mp.stop();
-        mp.release();
+        if (mp != null) {
+            try {
+                if (mp.isPlaying()) {
+                    mp.stop();
+                }
+            } catch (IllegalStateException ignored) {
+                // Legacy service may be unbound before prepare; ignore invalid stop state.
+            }
+            mp.release();
+            mp = null;
+        }
         return false;
     }
 

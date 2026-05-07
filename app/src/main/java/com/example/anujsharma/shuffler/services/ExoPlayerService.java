@@ -34,7 +34,9 @@ public class ExoPlayerService extends Service {
     public static final String ACTION_NEXT = "com.example.anujsharma.shuffler.ACTION_NEXT";
     public static final String ACTION_PREVIOUS = "com.example.anujsharma.shuffler.ACTION_PREVIOUS";
     public static final String ACTION_PLAY_PAUSE = "com.example.anujsharma.shuffler.ACTION_PLAY_PAUSE";
+    public static final String ACTION_STREAM_ERROR = "com.example.anujsharma.shuffler.ACTION_STREAM_ERROR";
     public static final String EXTRA_STREAM_URL = "stream_url";
+    public static final String EXTRA_ERROR_POSITION = "error_position";
 
     // FIX: expose a Binder so MainActivity can call play/pause/isPlaying directly on ExoPlayer
     private final IBinder binder = new ExoBinder();
@@ -92,6 +94,15 @@ public class ExoPlayerService extends Service {
                 int idx = player.getCurrentMediaItemIndex();
                 currentPosition = idx;
                 pref.setCurrentPlayingSongPosition(idx);
+            }
+
+            @Override
+            public void onPlayerError(androidx.media3.common.PlaybackException error) {
+                if (player == null) return;
+                int idx = player.getCurrentMediaItemIndex();
+                Intent i = new Intent(ACTION_STREAM_ERROR);
+                i.putExtra(EXTRA_ERROR_POSITION, idx);
+                sendBroadcast(i);
             }
         });
 
@@ -185,42 +196,27 @@ public class ExoPlayerService extends Service {
         String action = intent.getAction();
 
         if (ACTION_UPDATE_STREAM.equals(action)) {
-            // Stream URL is ready — load and play via ExoPlayer
             String streamUrl = intent.getStringExtra(EXTRA_STREAM_URL);
             Playlist playlist = intent.getParcelableExtra(Constants.PLAYLIST_MODEL_KEY);
             int position = intent.getIntExtra(Constants.CURRENT_PLAYING_SONG_POSITION, 0);
+            Log.d(TAG, "ACTION_UPDATE_STREAM url=" + (streamUrl != null ? streamUrl.substring(0, Math.min(80, streamUrl.length())) : "null"));
             if (streamUrl != null && !streamUrl.isEmpty()) {
                 currentPlaylist = playlist;
                 currentPosition = position;
-                pref.setCurrentPlaylist(playlist);
-                // Load all songs that have a stream URL so next/prev work across the playlist
+                if (playlist != null) pref.setCurrentPlaylist(playlist);
+
+                // Build MediaItem with explicit MIME type for audio/webm opus streams
+                MediaItem mediaItem = new MediaItem.Builder()
+                        .setUri(Uri.parse(streamUrl))
+                        .setMimeType("audio/webm")
+                        .build();
+
+                player.stop();
                 player.clearMediaItems();
-                if (playlist != null && playlist.getSongs() != null) {
-                    for (com.example.anujsharma.shuffler.models.Song s : playlist.getSongs()) {
-                        String url = s.getStreamUrl();
-                        if (url != null && !url.isEmpty()) {
-                            // Use explicit MIME type so ExoPlayer handles audio/webm proxy streams correctly
-                            player.addMediaItem(MediaItem.fromUri(Uri.parse(url)));
-                        }
-                    }
-                }
-                // If no other songs had stream URLs yet, just add the current one
-                if (player.getMediaItemCount() == 0) {
-                    player.addMediaItem(MediaItem.fromUri(Uri.parse(streamUrl)));
-                }
+                player.addMediaItem(mediaItem);
                 player.prepare();
-                int targetIndex = position;
-                int itemCount = player.getMediaItemCount();
-                if (itemCount <= 0) {
-                    targetIndex = 0;
-                } else {
-                    if (targetIndex < 0) targetIndex = 0;
-                    if (targetIndex >= itemCount) targetIndex = itemCount - 1;
-                }
-                currentPosition = targetIndex;
-                pref.setCurrentPlayingSongPosition(targetIndex);
-                player.seekTo(targetIndex, 0);
                 player.setPlayWhenReady(true);
+                Log.d(TAG, "ExoPlayer prepared and set to play");
             }
         } else if (ACTION_NEXT.equals(action)) {
             // Notification "next" button — advance to next track

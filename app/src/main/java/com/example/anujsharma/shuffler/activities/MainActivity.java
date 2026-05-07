@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -32,13 +33,16 @@ import com.example.anujsharma.shuffler.fragments.YourLibraryFragment;
 import com.example.anujsharma.shuffler.models.Playlist;
 import com.example.anujsharma.shuffler.models.Song;
 import com.example.anujsharma.shuffler.services.ExoPlayerService;
-import com.example.anujsharma.shuffler.services.MusicService;
 import com.example.anujsharma.shuffler.utilities.Constants;
 import com.example.anujsharma.shuffler.utilities.FisherYatesShuffle;
 import com.example.anujsharma.shuffler.utilities.SharedPreference;
+import com.example.anujsharma.shuffler.utilities.YouTubeInAppClient;
 import com.example.anujsharma.shuffler.volley.RequestCallback;
+import com.example.anujsharma.shuffler.volley.Urls;
 
 import java.util.ArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity implements RequestCallback {
 
@@ -47,9 +51,7 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
     public static final String SEARCH_FRAGMENT = "searchFragment";
     public static final String YOUR_LIBRARY_FRAGMENT = "yourLibraryFragment";
 
-    //service
-    public static MusicService musicSrv;
-    // FIX: add a reference to the real audio service so play/pause/next buttons work
+    // FIX: ExoPlayerService is the single playback engine for the app now.
     private ExoPlayerService exoSrv;
     private boolean exoBound = false;
     private ServiceConnection exoConnection = new ServiceConnection() {
@@ -74,80 +76,41 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
     //    private MediaPlayer mediaPlayer;
     private Context context;
     private ProgressBar mainSongLoader;
-    private View progressView;
     private TextView tvHome, tvSearch, tvMyProfile, tvSongName;
     private ImageView ivPlay, ivNext, ivFullView;
     private TracksDao tracksDao;
+    private YouTubeInAppClient youTubeInAppClient;
     private int currentSongPosition;
     private Playlist currentPlaylist;
-    private Intent playIntent, exoIntent;
-    //binding
-    private boolean musicBound = false;
-    private static boolean crashLoggerInstalled = false;
-    //connect to the service
-    private ServiceConnection musicConnection = new ServiceConnection() {
-
+    private Intent exoIntent;
+    private final ExecutorService networkExecutor = Executors.newFixedThreadPool(2);
+    private boolean streamErrorReceiverRegistered = false;
+    private final android.content.BroadcastReceiver streamErrorReceiver = new android.content.BroadcastReceiver() {
         @Override
-        public void onServiceConnected(ComponentName name, IBinder service) {
-            MusicService.MusicBinder binder = (MusicService.MusicBinder) service;
-            //get service
-            musicSrv = binder.getService();
-            musicBound = true;
-            musicSrv.setCallbacks(new MusicService.MusicServiceInterface() {
-                @Override
-                public void onMusicDisturbed(int state, Song song) {
-                    switch (state) {
-                        case Constants.MUSIC_STARTED:
-                            ivPlay.setClickable(true);
-                            ivPlay.setImageDrawable(getResources().getDrawable(R.drawable.ic_pause));
-                            break;
-                        case Constants.MUSIC_PLAYED:
-                            ivPlay.setImageDrawable(getResources().getDrawable(R.drawable.ic_pause));
-                            break;
-                        case Constants.MUSIC_PAUSED:
-                            ivPlay.setImageDrawable(getResources().getDrawable(R.drawable.ic_play));
-                            break;
-                        case Constants.MUSIC_ENDED:
-                            ivPlay.setImageDrawable(getResources().getDrawable(R.drawable.ic_play));
-                            break;
-                        case Constants.MUSIC_LOADED:
-                            ivPlay.setClickable(false);
-                            tvSongName.setText(song.getTitle());
-                            ivPlay.setImageDrawable(getResources().getDrawable(R.drawable.ic_pause));
-                            break;
-                    }
-                }
-
-                @Override
-                public void onSongChanged(int newPosition) {
-                    currentSongPosition = newPosition;
-                }
-
-                @Override
-                public void onMusicProgress(int position) {
-                    progressView.getBackground().setLevel(position);
-                }
-            });
-        }
-
-        @Override
-        public void onServiceDisconnected(ComponentName name) {
-            musicBound = false;
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null || !ExoPlayerService.ACTION_STREAM_ERROR.equals(intent.getAction())) return;
+            int failedPosition = intent.getIntExtra(ExoPlayerService.EXTRA_ERROR_POSITION, -1);
+            retryPlaybackForPosition(failedPosition);
         }
     };
+    //binding
+    private static boolean crashLoggerInstalled = false;
 
     @Override
     protected void onStart() {
         super.onStart();
-        // Bind legacy MusicService (used by ViewSongActivity seekbar/callbacks)
-        if (playIntent == null) {
-            playIntent = new Intent(getBaseContext(), MusicService.class);
-        }
-        bindService(playIntent, musicConnection, Context.BIND_AUTO_CREATE);
-        startService(playIntent);
-        // FIX: also bind ExoPlayerService so play/pause/next in mini-player work
+        // Bind ExoPlayerService so play/pause/next in mini-player work
         Intent eIntent = new Intent(this, ExoPlayerService.class);
         bindService(eIntent, exoConnection, Context.BIND_AUTO_CREATE);
+        if (!streamErrorReceiverRegistered) {
+            IntentFilter filter = new IntentFilter(ExoPlayerService.ACTION_STREAM_ERROR);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(streamErrorReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                registerReceiver(streamErrorReceiver, filter);
+            }
+            streamErrorReceiverRegistered = true;
+        }
     }
 
     @Override
@@ -227,11 +190,41 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
             startService(exoIntent);
         }
 
-        // Step 2: Fetch stream URL in background, then send it to the already-running service
+        String existingStreamUrl = song.getStreamUrl();
+        // SoundCloud path: track already has stream_url, only normalize with client_id if needed.
+        if (existingStreamUrl != null && !existingStreamUrl.isEmpty()) {
+            String playableUrl = normalizeStreamUrl(existingStreamUrl);
+            song.setStreamUrl(playableUrl);
+            for (Song s : playlist.getSongs()) {
+                if (s.getId() == song.getId()) s.setStreamUrl(playableUrl);
+            }
+            pref.setCurrentPlaylist(playlist);
+
+            Intent updateIntent = new Intent(this, ExoPlayerService.class);
+            updateIntent.setAction(ExoPlayerService.ACTION_UPDATE_STREAM);
+            updateIntent.putExtra(ExoPlayerService.EXTRA_STREAM_URL, playableUrl);
+            updateIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, playlist);
+            updateIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, songPosition);
+            startService(updateIntent);
+            ivPlay.setImageDrawable(getResources().getDrawable(R.drawable.ic_pause));
+            return;
+        }
+
+        // YouTube path: fetch stream URL from backend.
         mainSongLoader.setVisibility(android.view.View.VISIBLE);
         String videoId = song.getVideoId();
         final Playlist finalPlaylist = playlist;
-        new Thread(() -> fetchStreamAndPlay(videoId, song, finalPlaylist, songPosition)).start();
+        networkExecutor.execute(() -> fetchStreamAndPlay(videoId, song, finalPlaylist, songPosition));
+    }
+
+    private String normalizeStreamUrl(String streamUrl) {
+        if (streamUrl == null || streamUrl.isEmpty()) return streamUrl;
+        if (streamUrl.contains("soundcloud.com")
+                && streamUrl.contains("/stream")
+                && !streamUrl.contains("client_id=")) {
+            return streamUrl + (streamUrl.contains("?") ? "&" : "?") + "client_id=" + Urls.CLIENT_ID;
+        }
+        return streamUrl;
     }
 
     /**
@@ -278,37 +271,22 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
 
     private void fetchStreamAndPlay(String videoId, Song song, Playlist playlist, int songPosition) {
         try {
-            okhttp3.OkHttpClient client = new okhttp3.OkHttpClient();
-            okhttp3.Request request = new okhttp3.Request.Builder()
-                    .url(com.example.anujsharma.shuffler.volley.Urls.YOUTUBE_BACKEND_BASE_URL
-                            + "api/song/" + videoId + "/stream")
-                    .build();
-            okhttp3.Response response = client.newCall(request).execute();
-            if (response.isSuccessful() && response.body() != null) {
-                String json = response.body().string();
-                org.json.JSONObject obj = new org.json.JSONObject(json);
-                String streamUrl = obj.getString("url");
-                song.setStreamUrl(streamUrl);
-                for (Song s : playlist.getSongs()) {
-                    if (s.getVideoId().equals(videoId)) s.setStreamUrl(streamUrl);
-                }
-                pref.setCurrentPlaylist(playlist);
-
-                // Send stream URL to already-running service via update intent
-                Intent updateIntent = new Intent(this, ExoPlayerService.class);
-                updateIntent.setAction(ExoPlayerService.ACTION_UPDATE_STREAM);
-                updateIntent.putExtra(ExoPlayerService.EXTRA_STREAM_URL, streamUrl);
-                updateIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, playlist);
-                updateIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, songPosition);
-                startService(updateIntent);
-
-                runOnUiThread(() -> mainSongLoader.setVisibility(android.view.View.GONE));
-            } else {
-                runOnUiThread(() -> {
-                    mainSongLoader.setVisibility(android.view.View.GONE);
-                    Toast.makeText(context, "Failed to get stream URL", Toast.LENGTH_SHORT).show();
-                });
+            String streamUrl = youTubeInAppClient.resolveBestAudioStreamUrl(videoId);
+            song.setStreamUrl(streamUrl);
+            for (Song s : playlist.getSongs()) {
+                if (s.getVideoId().equals(videoId)) s.setStreamUrl(streamUrl);
             }
+            pref.setCurrentPlaylist(playlist);
+
+            Intent updateIntent = new Intent(this, ExoPlayerService.class);
+            updateIntent.setAction(ExoPlayerService.ACTION_UPDATE_STREAM);
+            updateIntent.putExtra(ExoPlayerService.EXTRA_STREAM_URL, streamUrl);
+            updateIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, playlist);
+            updateIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, songPosition);
+            startService(updateIntent);
+            prefetchNextSongStream(playlist, songPosition);
+
+            runOnUiThread(() -> mainSongLoader.setVisibility(android.view.View.GONE));
         } catch (Exception e) {
             Log.e(TAG, "fetchStreamAndPlay error", e);
             runOnUiThread(() -> {
@@ -316,6 +294,55 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
                 Toast.makeText(context, "Playback error: " + e.getMessage(), Toast.LENGTH_SHORT).show();
             });
         }
+    }
+
+    private void retryPlaybackForPosition(int failedPosition) {
+        if (currentPlaylist == null || currentPlaylist.getSongs() == null || currentPlaylist.getSongs().isEmpty()) return;
+        if (failedPosition < 0 || failedPosition >= currentPlaylist.getSongs().size()) return;
+
+        Song failedSong = currentPlaylist.getSongs().get(failedPosition);
+        String videoId = failedSong.getVideoId();
+        if (videoId == null || videoId.isEmpty()) return;
+
+        networkExecutor.execute(() -> {
+            try {
+                youTubeInAppClient.invalidateStream(videoId);
+                String refreshedUrl = youTubeInAppClient.resolveBestAudioStreamUrl(videoId);
+                failedSong.setStreamUrl(refreshedUrl);
+                pref.setCurrentPlaylist(currentPlaylist);
+
+                Intent updateIntent = new Intent(this, ExoPlayerService.class);
+                updateIntent.setAction(ExoPlayerService.ACTION_UPDATE_STREAM);
+                updateIntent.putExtra(ExoPlayerService.EXTRA_STREAM_URL, refreshedUrl);
+                updateIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, currentPlaylist);
+                updateIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, failedPosition);
+                startService(updateIntent);
+                prefetchNextSongStream(currentPlaylist, failedPosition);
+            } catch (Exception e) {
+                Log.e(TAG, "retryPlaybackForPosition failed", e);
+                runOnUiThread(() -> Toast.makeText(this, "Stream refresh failed", Toast.LENGTH_SHORT).show());
+            }
+        });
+    }
+
+    private void prefetchNextSongStream(Playlist playlist, int currentPosition) {
+        if (playlist == null || playlist.getSongs() == null || playlist.getSongs().isEmpty()) return;
+        int nextPosition = currentPosition + 1;
+        if (nextPosition >= playlist.getSongs().size()) return;
+        Song nextSong = playlist.getSongs().get(nextPosition);
+        if (nextSong.getStreamUrl() != null && !nextSong.getStreamUrl().isEmpty()) return;
+        String nextVideoId = nextSong.getVideoId();
+        if (nextVideoId == null || nextVideoId.isEmpty()) return;
+
+        networkExecutor.execute(() -> {
+            try {
+                String nextStream = youTubeInAppClient.resolveBestAudioStreamUrl(nextVideoId);
+                nextSong.setStreamUrl(nextStream);
+                pref.setCurrentPlaylist(playlist);
+            } catch (Exception ignored) {
+                // best-effort prefetch
+            }
+        });
     }
 
     public void updatePlaylistInMainActivity(Playlist playlist) {
@@ -398,6 +425,7 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
         context = getApplicationContext();
         pref = new SharedPreference(context);
         tracksDao = new TracksDao(context, this);
+        youTubeInAppClient = new YouTubeInAppClient();
 
         tvHome = findViewById(R.id.xtvHome);
         tvSearch = findViewById(R.id.xtvSearch);
@@ -408,8 +436,6 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
         ivFullView = findViewById(R.id.ivUpArrow);
         ivNext = findViewById(R.id.ivPlayNext);
         ivPlay = findViewById(R.id.ivPlaySong);
-        progressView = findViewById(R.id.progressView);
-
         currentPlaylist = pref.getCurrentPlaylist();
         currentSongPosition = pref.getCurrentPlayingSongPosition();
         if (currentPlaylist != null
@@ -571,20 +597,20 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
                 && currentSongPosition < currentPlaylist.getSongs().size()) {
             pref.setCurrentPlayingSong(currentPlaylist.getSongs().get(currentSongPosition).getId());
         }
-        if (musicSrv != null) pref.setCurrentPlayingSongPosition(musicSrv.getSongPosition());
-        if (musicBound) {
-            unbindService(musicConnection);
-            musicBound = false;
-        }
         // FIX: also unbind ExoPlayerService
         if (exoBound) {
             unbindService(exoConnection);
             exoBound = false;
         }
+        if (streamErrorReceiverRegistered) {
+            unregisterReceiver(streamErrorReceiver);
+            streamErrorReceiverRegistered = false;
+        }
     }
 
     @Override
     protected void onDestroy() {
+        networkExecutor.shutdownNow();
         super.onDestroy();
     }
 

@@ -18,10 +18,7 @@ import com.example.anujsharma.shuffler.adapters.SearchSongRecyclerViewAdapter;
 import com.example.anujsharma.shuffler.models.Playlist;
 import com.example.anujsharma.shuffler.models.Song;
 import com.example.anujsharma.shuffler.utilities.Constants;
-import com.example.anujsharma.shuffler.volley.Urls;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.example.anujsharma.shuffler.utilities.YouTubeInAppClient;
 
 import java.util.ArrayList;
 
@@ -33,6 +30,7 @@ public class HomeFragment extends Fragment {
     private ProgressBar progressBar;
     private RelativeLayout rlHomeError;
     private ArrayList<Song> trendingSongs = new ArrayList<>();
+    private YouTubeInAppClient youTubeInAppClient;
 
     public HomeFragment() {
     }
@@ -41,6 +39,7 @@ public class HomeFragment extends Fragment {
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         context = getActivity();
+        youTubeInAppClient = new YouTubeInAppClient();
     }
 
     @Override
@@ -77,54 +76,28 @@ public class HomeFragment extends Fragment {
         showProgressBar();
         new Thread(() -> {
             try {
-                okhttp3.OkHttpClient client = new okhttp3.OkHttpClient();
-                okhttp3.Request request = new okhttp3.Request.Builder()
-                        .url(Urls.YOUTUBE_BACKEND_BASE_URL + "api/search?q=trending")
-                        .build();
-                okhttp3.Response response = client.newCall(request).execute();
-                if (response.isSuccessful() && response.body() != null) {
-                    String json = response.body().string();
-                    JSONObject root = new JSONObject(json);
-                    JSONArray songsArray = root.optJSONArray("songs");
-                    ArrayList<Song> fetched = new ArrayList<>();
-                    if (songsArray != null) {
-                        for (int i = 0; i < songsArray.length(); i++) {
-                            JSONObject s = songsArray.getJSONObject(i);
-                            Song song = new Song(
-                                    s.optString("id"),
-                                    s.optString("title"),
-                                    s.optString("artist"),
-                                    s.optLong("durationMs"),
-                                    s.optString("artworkUrl")
-                            );
-                            fetched.add(song);
-                        }
-                    }
-                    if (getActivity() == null) return;
-                    getActivity().runOnUiThread(() -> {
-                        trendingSongs.clear();
-                        trendingSongs.addAll(fetched);
-                        if (trendingSongs.isEmpty()) {
-                            showError();
-                        } else {
-                            trendingAdapter.changeSongData(trendingSongs);
-                            trendingAdapter.changeUserData(new ArrayList<>());
-                            trendingAdapter.changePlaylistData(new ArrayList<>());
-                            showRecyclerView();
-                        }
-                    });
-                } else {
-                    if (getActivity() != null) {
-                        getActivity().runOnUiThread(this::showError);
-                    }
-                }
+                ArrayList<Song> fetched = youTubeInAppClient.searchSongs("trending music", 20);
+                if (getActivity() == null) return;
+                getActivity().runOnUiThread(() -> {
+                    if (fetched.isEmpty()) showError();
+                    else showSongs(fetched);
+                });
             } catch (Exception e) {
-                android.util.Log.e("HomeFragment", "Trending fetch error", e);
+                android.util.Log.e("HomeFragment", "In-app YouTube trending error", e);
                 if (getActivity() != null) {
                     getActivity().runOnUiThread(this::showError);
                 }
             }
         }).start();
+    }
+
+    private void showSongs(ArrayList<Song> list) {
+        trendingSongs.clear();
+        trendingSongs.addAll(list);
+        trendingAdapter.changeSongData(trendingSongs);
+        trendingAdapter.changeUserData(new ArrayList<>());
+        trendingAdapter.changePlaylistData(new ArrayList<>());
+        showRecyclerView();
     }
 
     private void showProgressBar() {
