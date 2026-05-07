@@ -34,3 +34,7 @@ pnpm-debug.log*
 .env.*
 backend/.env
 backend/.env.*
+
+# Local planning docs
+IMPLEMENTATION_GUIDE.md
+PLAN.md

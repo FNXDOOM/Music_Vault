@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Smynd</string>
+    <string name="app_name">Song Vault</string>
     <string name="shared_pref_name">Shuffler</string>
     <string name="action_settings">Settings</string>
 
