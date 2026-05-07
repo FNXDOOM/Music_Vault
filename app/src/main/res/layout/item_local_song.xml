@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingStart="16dp"
+    android:paddingEnd="12dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="10dp">
+
+    <!-- Music note icon -->
+    <ImageView
+        android:id="@+id/ivLocalSongIcon"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_centerVertical="true"
+        android:layout_alignParentStart="true"
+        android:src="@drawable/ic_headphones"
+        android:padding="6dp"
+        android:background="#33ffffff"
+        android:tint="@android:color/white" />
+
+    <!-- Title -->
+    <TextView
+        android:id="@+id/tvLocalSongTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_toEndOf="@+id/ivLocalSongIcon"
+        android:layout_toStartOf="@+id/tvLocalSongDuration"
+        android:layout_alignTop="@+id/ivLocalSongIcon"
+        android:layout_marginStart="12dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@android:color/white"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:text="Song Title" />
+
+    <!-- Artist • Album -->
+    <TextView
+        android:id="@+id/tvLocalSongSubtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_below="@+id/tvLocalSongTitle"
+        android:layout_toEndOf="@+id/ivLocalSongIcon"
+        android:layout_toStartOf="@+id/tvLocalSongDuration"
+        android:layout_marginStart="12dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="#99ffffff"
+        android:textSize="12sp"
+        android:text="Artist • Album" />
+
+    <!-- Duration (right-aligned) -->
+    <TextView
+        android:id="@+id/tvLocalSongDuration"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_centerVertical="true"
+        android:layout_alignParentEnd="true"
+        android:textColor="#99ffffff"
+        android:textSize="12sp"
+        android:text="3:45" />
+
+</RelativeLayout>

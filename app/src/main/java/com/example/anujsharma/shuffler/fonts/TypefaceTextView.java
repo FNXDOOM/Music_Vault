@@ -1,0 +1,47 @@
+package com.example.anujsharma.shuffler.fonts;
+
+import android.content.Context;
+import android.content.res.TypedArray;
+import android.graphics.Paint;
+import android.graphics.Typeface;
+import android.text.TextUtils;
+import android.util.AttributeSet;
+
+import androidx.appcompat.widget.AppCompatTextView;
+import androidx.collection.LruCache;
+
+import com.example.anujsharma.shuffler.R;
+
+public class TypefaceTextView extends AppCompatTextView {
+
+    private static LruCache<String, Typeface> sTypefaceCache = new LruCache<>(12);
+
+    public TypefaceTextView(Context context, AttributeSet attrs) {
+        super(context, attrs);
+        TypedArray a = context.getTheme().obtainStyledAttributes(attrs,
+                R.styleable.Typeface, 0, 0);
+
+        try {
+            String typefaceName = a.getString(R.styleable.Typeface_typeface);
+
+            if (!isInEditMode() && !TextUtils.isEmpty(typefaceName)) {
+                Typeface typeface = sTypefaceCache.get(typefaceName);
+
+                if (typeface == null) {
+                    if (typefaceName.startsWith("Mon")) {
+                        typeface = Typeface.createFromAsset(context.getAssets(),
+                                String.format("fonts/%s.otf", typefaceName));
+                    } else {
+                        typeface = Typeface.createFromAsset(context.getAssets(),
+                                String.format("fonts/%s.ttf", typefaceName));
+                    }
+                    sTypefaceCache.put(typefaceName, typeface);
+                }
+                setTypeface(typeface);
+                setPaintFlags(getPaintFlags() | Paint.SUBPIXEL_TEXT_FLAG);
+            }
+        } finally {
+            a.recycle();
+        }
+    }
+}
