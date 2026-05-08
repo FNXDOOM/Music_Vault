@@ -4,6 +4,11 @@ import android.net.Uri;
 
 import com.example.anujsharma.shuffler.models.Song;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -35,6 +40,7 @@ public class YouTubeInAppClient {
             "https://youtubei.googleapis.com/youtubei/v1/player?key=" + YOUTUBEI_KEY;
 
     private static final String[] API_BASES = new String[]{
+            "http://10.0.2.2:3000",
             "https://pipedapi.adminforge.de",
             "https://pipedapi.drgns.space",
             "https://pipedapi.kavin.rocks",
@@ -49,6 +55,57 @@ public class YouTubeInAppClient {
 
     private final OkHttpClient httpClient = new OkHttpClient();
     private final Map<String, CachedStream> streamCache = new HashMap<>();
+    private final Gson gson = new Gson();
+    private String lastWorkingInstance = null;
+
+    private static class FetchResult {
+        public final String baseUrl;
+        public final String response;
+        public FetchResult(String baseUrl, String response) {
+            this.baseUrl = baseUrl;
+            this.response = response;
+        }
+    }
+
+    private FetchResult fetchFromAnyInstance(String[] baseUrls, String path) throws Exception {
+        Exception lastError = null;
+
+        if (lastWorkingInstance != null) {
+            try {
+                String result = executeRequest(lastWorkingInstance + path);
+                if (result != null) return new FetchResult(lastWorkingInstance, result);
+            } catch (Exception e) {
+                lastError = e;
+                lastWorkingInstance = null;
+            }
+        }
+
+        for (String base : baseUrls) {
+            if (base.equals(lastWorkingInstance)) continue;
+            try {
+                String result = executeRequest(base + path);
+                if (result != null) {
+                    lastWorkingInstance = base;
+                    return new FetchResult(base, result);
+                }
+            } catch (Exception e) {
+                lastError = e;
+            }
+        }
+
+        if (lastError != null) throw lastError;
+        throw new IllegalStateException("All instances failed for path: " + path);
+    }
+
+    private String executeRequest(String url) throws Exception {
+        Request request = new Request.Builder().url(url).build();
+        try (Response response = httpClient.newCall(request).execute()) {
+            if (response.isSuccessful() && response.body() != null) {
+                return response.body().string();
+            }
+        }
+        return null;
+    }
 
     public ArrayList<Song> searchSongs(String query, int limit) throws Exception {
         try {
@@ -120,107 +177,75 @@ public class YouTubeInAppClient {
             // fallback below
         }
 
-        Exception last = null;
-        Exception lastNonTlsError = null;
-        for (String base : API_BASES) {
-            try {
-                String url = base + "/streams/" + videoId;
-                Request request = new Request.Builder().url(url).build();
-                try (Response response = httpClient.newCall(request).execute()) {
-                    if (!response.isSuccessful() || response.body() == null) continue;
-                    String json = response.body().string();
-                    JSONObject root = new JSONObject(json);
-                    JSONArray audioStreams = root.optJSONArray("audioStreams");
-                    if (audioStreams == null || audioStreams.length() == 0) continue;
-
-                    int bestIndex = -1;
-                    int bestBitrate = Integer.MIN_VALUE;
-                    for (int i = 0; i < audioStreams.length(); i++) {
-                        JSONObject a = audioStreams.optJSONObject(i);
-                        if (a == null) continue;
-                        int bitrate = a.optInt("bitrate", 0);
-                        String streamUrl = a.optString("url", "");
-                        if (streamUrl == null || streamUrl.isEmpty()) continue;
-                        if (bitrate > bestBitrate) {
-                            bestBitrate = bitrate;
-                            bestIndex = i;
-                        }
-                    }
-
-                    if (bestIndex >= 0) {
-                        String streamUrl = audioStreams.getJSONObject(bestIndex).optString("url", "");
-                        if (streamUrl != null && !streamUrl.isEmpty()) {
-                            putCached(videoId, streamUrl);
-                            return streamUrl;
-                        }
-                    }
-                }
-            } catch (SSLHandshakeException ssl) {
-                // Some public mirror cert chains expire occasionally; skip this host and try next.
-                last = ssl;
-            } catch (Exception e) {
-                last = e;
-                lastNonTlsError = e;
-            }
-        }
-        if (lastNonTlsError != null) throw lastNonTlsError;
-        if (last != null) {
-            try {
-                String inv = resolveBestAudioStreamUrlFromInvidious(videoId);
-                putCached(videoId, inv);
-                return inv;
-            } catch (Exception ignored) {
-                // fall through and throw last
-            }
-            throw last;
-        }
         try {
-            String inv = resolveBestAudioStreamUrlFromInvidious(videoId);
-            putCached(videoId, inv);
-            return inv;
+            FetchResult fetchResult = fetchFromAnyInstance(API_BASES, "/api/v1/videos/" + videoId);
+            String url = parseBestFormat(fetchResult.response, fetchResult.baseUrl, videoId);
+            putCached(videoId, url);
+            return url;
         } catch (Exception ignored) {
-            // fall through
+            // fallback below
         }
-        throw new IllegalStateException(String.format(Locale.US, "Unable to resolve stream URL for %s", videoId));
+
+        try {
+            FetchResult fetchResult = fetchFromAnyInstance(INVIDIOUS_BASES, "/api/v1/videos/" + videoId);
+            String url = parseBestFormat(fetchResult.response, fetchResult.baseUrl, videoId);
+            putCached(videoId, url);
+            return url;
+        } catch (Exception e) {
+            throw new IllegalStateException(String.format(Locale.US, "Unable to resolve stream URL for %s", videoId));
+        }
     }
 
-    private String resolveBestAudioStreamUrlFromInvidious(String videoId) throws Exception {
-        Exception last = null;
-        for (String base : INVIDIOUS_BASES) {
-            try {
-                String url = base + "/api/v1/videos/" + videoId;
-                Request request = new Request.Builder().url(url).build();
-                try (Response response = httpClient.newCall(request).execute()) {
-                    if (!response.isSuccessful() || response.body() == null) continue;
-                    JSONObject root = new JSONObject(response.body().string());
-                    JSONArray adaptive = root.optJSONArray("adaptiveFormats");
-                    if (adaptive == null || adaptive.length() == 0) continue;
-                    int bestIndex = -1;
-                    int bestBitrate = Integer.MIN_VALUE;
-                    for (int i = 0; i < adaptive.length(); i++) {
-                        JSONObject f = adaptive.optJSONObject(i);
-                        if (f == null) continue;
-                        String type = f.optString("type", "");
-                        if (!type.startsWith("audio/")) continue;
-                        String streamUrl = f.optString("url", "");
-                        if (streamUrl == null || streamUrl.isEmpty()) continue;
-                        int bitrate = f.optInt("bitrate", 0);
-                        if (bitrate > bestBitrate) {
-                            bestBitrate = bitrate;
-                            bestIndex = i;
-                        }
-                    }
-                    if (bestIndex >= 0) {
-                        String streamUrl = adaptive.getJSONObject(bestIndex).optString("url", "");
-                        if (streamUrl != null && !streamUrl.isEmpty()) return streamUrl;
-                    }
-                }
-            } catch (Exception e) {
-                last = e;
+    private String parseBestFormat(String jsonResponse, String instanceBaseUrl, String trackId) throws Exception {
+        JsonObject root = gson.fromJson(jsonResponse, JsonObject.class);
+        if (!root.has("adaptiveFormats")) {
+            throw new IllegalStateException("No adaptiveFormats found in the response");
+        }
+        JsonArray adaptiveFormats = root.getAsJsonArray("adaptiveFormats");
+
+        JsonObject bestFormat = null;
+        int bestBitrate = -1;
+        boolean isBestMp4 = false;
+
+        for (JsonElement element : adaptiveFormats) {
+            JsonObject format = element.getAsJsonObject();
+            if (!format.has("type")) continue;
+
+            String type = format.get("type").getAsString();
+            if (!type.startsWith("audio/")) continue;
+
+            boolean isMp4 = type.contains("mp4");
+            int bitrate = format.has("bitrate") ? format.get("bitrate").getAsInt() : 0;
+
+            if (bestFormat == null) {
+                bestFormat = format;
+                bestBitrate = bitrate;
+                isBestMp4 = isMp4;
+            } else if (isMp4 && !isBestMp4) {
+                bestFormat = format;
+                bestBitrate = bitrate;
+                isBestMp4 = true;
+            } else if (isMp4 == isBestMp4 && bitrate > bestBitrate) {
+                bestFormat = format;
+                bestBitrate = bitrate;
             }
         }
-        if (last != null) throw last;
-        throw new IllegalStateException("Invidious fallback failed");
+
+        if (bestFormat == null) {
+            throw new IllegalStateException("No suitable audio formats found");
+        }
+
+        if (bestFormat.has("itag")) {
+            int itag = bestFormat.get("itag").getAsInt();
+            return String.format(Locale.US, "%s/latest_version?id=%s&itag=%d&local=true", 
+                    instanceBaseUrl, trackId, itag);
+        }
+
+        if (bestFormat.has("url")) {
+            return bestFormat.get("url").getAsString();
+        }
+
+        throw new IllegalStateException("Selected format has neither itag nor url");
     }
 
     public synchronized void invalidateStream(String videoId) {
