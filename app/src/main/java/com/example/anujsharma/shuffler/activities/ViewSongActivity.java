@@ -1,16 +1,18 @@
 package com.example.anujsharma.shuffler.activities;
 
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
 import androidx.viewpager.widget.ViewPager;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.media3.common.Player;
-import androidx.media3.common.C;
 import androidx.palette.graphics.Palette;
 import android.view.View;
 import android.widget.ImageView;
@@ -59,6 +61,7 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
     private SharedPreference pref;
     private YouTubeInAppClient youTubeInAppClient;
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
+    private int currentRetryCount = 0;
 
     private long getDurationMs(Song song) {
         if (song == null) return 0L;
@@ -67,7 +70,12 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
         return d < 1000 ? d * 1000L : d;
     }
 
-    // FIX: Player.Listener registered on ExoPlayer to drive seekbar, replacing MusicService.ViewMusicInterface
+    // Player.Listener registered on ExoPlayer — only used to sync the play/pause icon.
+    // NOTE: We do NOT override onMediaItemTransition here. Because we use a single-item
+    // queue (stop + clearMediaItems + setMediaItem for every track change), ExoPlayer
+    // always reports getCurrentMediaItemIndex() == 0, which would snap the ViewPager back
+    // to song 0 on every load. UI position sync is handled by onPageSelected +
+    // songChangedReceiver which already know the correct position.
     private final Player.Listener exoPlayerListener = new Player.Listener() {
         @Override
         public void onIsPlayingChanged(boolean isPlayingNow) {
@@ -75,29 +83,6 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
                 ivPlay.setImageDrawable(getResources().getDrawable(R.drawable.ic_pause));
             } else {
                 ivPlay.setImageDrawable(getResources().getDrawable(R.drawable.ic_play));
-            }
-        }
-
-        @Override
-        public void onMediaItemTransition(androidx.media3.common.MediaItem mediaItem, int reason) {
-            // When ExoPlayer moves to a new media item, sync the ViewPager position
-            if (exoService != null) {
-                int newIndex = exoService.getPlayer().getCurrentMediaItemIndex();
-                if (newIndex != currentPlayingPosition) {
-                    currentPlayingPosition = newIndex;
-                    viewPager.setCurrentItem(newIndex, true);
-                    if (songs != null && newIndex < songs.size()) {
-                        Song song = songs.get(newIndex);
-                        tvSongName.setText(song.getTitle());
-                        tvArtistName.setText(song.getArtist());
-                        long durationMs = getDurationMs(song);
-                        tvDuration.setText(Utilities.formatTime(durationMs));
-                        tvCurrentTime.setText(Utilities.formatTime(0));
-                        seekBar.setProgress(0);
-                        seekBar.setMax((int) (durationMs / 100));
-                        changeBackground(song.getSongArtwork());
-                    }
-                }
             }
         }
     };
@@ -118,6 +103,48 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
                 tvCurrentTime.setText(Utilities.formatTime(pos));
             }
             seekBar.postDelayed(this, 100);
+        }
+    };
+
+    private boolean songChangedReceiverRegistered = false;
+    private final BroadcastReceiver songChangedReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null) return;
+            String action = intent.getAction();
+            if (ExoPlayerService.ACTION_SONG_CHANGED.equals(action)) {
+                int newPos = intent.getIntExtra(ExoPlayerService.EXTRA_SONG_POSITION, -1);
+                if (newPos >= 0 && songs != null && newPos < songs.size() && newPos != currentPlayingPosition) {
+                    currentPlayingPosition = newPos;
+                    currentRetryCount = 0; // Reset retries on new song
+                    viewPager.setCurrentItem(newPos, true);
+                    Song song = songs.get(newPos);
+                    tvSongName.setText(song.getTitle());
+                    tvArtistName.setText(song.getArtist());
+                    long durationMs = getDurationMs(song);
+                    tvDuration.setText(Utilities.formatTime(durationMs));
+                    tvCurrentTime.setText(Utilities.formatTime(0));
+                    seekBar.setProgress(0);
+                    seekBar.setMax((int) (durationMs / 100));
+                    changeBackground(song.getSongArtwork());
+                }
+            } else if (ExoPlayerService.ACTION_STREAM_ERROR.equals(action)) {
+                int failedPosition = intent.getIntExtra(ExoPlayerService.EXTRA_ERROR_POSITION, -1);
+                if (failedPosition >= 0 && failedPosition == currentPlayingPosition && songs != null && failedPosition < songs.size()) {
+                    Song failedSong = songs.get(failedPosition);
+                    String videoId = failedSong.getVideoId();
+                    if (videoId != null && !videoId.isEmpty()) {
+                        if (currentRetryCount < 3) {
+                            currentRetryCount++;
+                            // Invalidate cache and retry
+                            networkExecutor.execute(() -> youTubeInAppClient.invalidateStream(videoId));
+                            resolveAndStartCurrentSong(failedSong, failedPosition);
+                        } else {
+                            Toast.makeText(context, "Stream cannot be played after multiple attempts.", Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                }
+            }
         }
     };
 
@@ -214,6 +241,26 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
     @Override
     protected void onStart() {
         super.onStart();
+        if (!songChangedReceiverRegistered) {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(ExoPlayerService.ACTION_SONG_CHANGED);
+            filter.addAction(ExoPlayerService.ACTION_STREAM_ERROR);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(songChangedReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                registerReceiver(songChangedReceiver, filter);
+            }
+            songChangedReceiverRegistered = true;
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (songChangedReceiverRegistered) {
+            unregisterReceiver(songChangedReceiver);
+            songChangedReceiverRegistered = false;
+        }
     }
 
     @Override
@@ -268,17 +315,39 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
 
             @Override
             public void onPageSelected(int position) {
-                // FIX: guard null — service may not yet be bound during swipe
+                // Guard: ignore if this is the same song or service not yet bound
+                if (position == currentPlayingPosition) return;
                 if (exoService == null) return;
-                if (position > currentPlayingPosition) {
-                    // FIX: use exoService.playNext() instead of musicService.playNext()
-                    exoService.playNext();
-                } else if (position < currentPlayingPosition) {
-                    // FIX: use exoService.playPrev() instead of musicService.playPrev()
-                    exoService.playPrev();
-                }
+
                 currentPlayingPosition = position;
-                changeBackground(songs.get(currentPlayingPosition).getSongArtwork());
+                currentRetryCount = 0; // Reset retries on swipe
+                Song swipedSong = songs.get(position);
+
+                // Update UI immediately so the screen reflects the new song right away
+                tvSongName.setText(swipedSong.getTitle());
+                tvArtistName.setText(swipedSong.getArtist());
+                long durationMs = getDurationMs(swipedSong);
+                tvDuration.setText(Utilities.formatTime(durationMs));
+                tvCurrentTime.setText(Utilities.formatTime(0));
+                seekBar.setProgress(0);
+                seekBar.setMax((int) (durationMs / 100));
+                changeBackground(swipedSong.getSongArtwork());
+
+                // Tell the service which position we're now at (keeps its state in sync)
+                // without going through playNext/playPrev — we already know exactly which song.
+                String existingUrl = swipedSong.getStreamUrl();
+                if (existingUrl != null && !existingUrl.isEmpty()) {
+                    // Stream already resolved — play immediately
+                    Intent updateIntent = new Intent(ViewSongActivity.this, ExoPlayerService.class);
+                    updateIntent.setAction(ExoPlayerService.ACTION_UPDATE_STREAM);
+                    updateIntent.putExtra(ExoPlayerService.EXTRA_STREAM_URL, existingUrl);
+                    updateIntent.putExtra(Constants.PLAYLIST_MODEL_KEY, currentPlaylist);
+                    updateIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, position);
+                    startService(updateIntent);
+                } else {
+                    // Need to resolve the stream URL first
+                    resolveAndStartCurrentSong(swipedSong, position);
+                }
             }
 
             @Override
@@ -396,12 +465,14 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
                 startService(i);
                 return;
             }
-            if (songs != null && currentPlayingPosition - 1 >= 0) {
-                currentPlayingPosition--;
-                viewPager.setCurrentItem(currentPlayingPosition, true);
+            int prevPos = currentPlayingPosition - 1;
+            if (prevPos < 0) {
+                Toast.makeText(this, "Already at the first song", Toast.LENGTH_SHORT).show();
+                return;
             }
-            // FIX: use exoService.playPrev() instead of musicService.playPrev()
-            exoService.playPrev();
+            currentPlayingPosition = prevPos;
+            viewPager.setCurrentItem(prevPos, true);
+            // onPageSelected will fire and handle stream resolution + playback
         } else if (viewId == R.id.ivPlay) {
             if (exoService == null) {
                 Intent i = new Intent(this, ExoPlayerService.class);
@@ -430,12 +501,11 @@ public class ViewSongActivity extends AppCompatActivity implements View.OnClickL
                 startService(i);
                 return;
             }
-            if (songs != null && currentPlayingPosition + 1 < songs.size()) {
-                currentPlayingPosition++;
-                viewPager.setCurrentItem(currentPlayingPosition, true);
-            }
-            // FIX: use exoService.playNext() instead of musicService.playNext()
-            exoService.playNext();
+            int nextPos = currentPlayingPosition + 1;
+            if (songs == null || nextPos >= songs.size()) return; // already at last song
+            currentPlayingPosition = nextPos;
+            viewPager.setCurrentItem(nextPos, true);
+            // onPageSelected will fire and handle stream resolution + playback
         } else if (viewId == R.id.ivRepeat) {
             // Req 3.7: repeat toggle persists via SharedPreference
             if (pref.getIsRepeatOn()) {

@@ -73,6 +73,11 @@ public class HomeFragment extends Fragment {
     }
 
     private void fetchTrendingSongs() {
+        // Don't re-fetch if we already have results (tab switches re-create the view)
+        if (!trendingSongs.isEmpty()) {
+            showSongs(trendingSongs);
+            return;
+        }
         showProgressBar();
         new Thread(() -> {
             try {

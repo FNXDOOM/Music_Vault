@@ -11,11 +11,16 @@ public class Urls {
     public static final String USERS = "https://api.soundcloud.com/users";
     public static final String PLAYLISTS = "https://api.soundcloud.com/playlists";
 
-    // 10.0.2.2 = Android emulator localhost only.
-    // FIX: On a physical device, replace with your PC's WiFi IP.
-    // Run `ipconfig` on Windows -> look for "IPv4 Address" under your WiFi adapter.
-    // Example: "http://192.168.1.5:3000/"
-    // To find it automatically: Settings -> WiFi -> your network -> IP address on PC
+    // ─── YouTube backend URL ──────────────────────────────────────────────────
+    // • Emulator:       http://10.0.2.2:3000/   (Android emulator routes 10.0.2.2 → PC localhost)
+    // • Physical device: http://<PC-WiFi-IP>:3000/
+    //     1. Run `ipconfig` on Windows → find "IPv4 Address" under WiFi adapter (e.g. 192.168.1.5)
+    //     2. Set BACKEND_HOST=192.168.1.5 in backend/.env
+    //     3. Change the line below to:  "http://192.168.1.5:3000/"
+    //
+    // The backend is OPTIONAL — the app falls back to YouTubeInAppClient (no backend needed).
+    // Set this URL only if you are running the backend server on your PC.
+    // ─────────────────────────────────────────────────────────────────────────
     public static final String YOUTUBE_BACKEND_BASE_URL = "http://10.0.2.2:3000/";
 
 }

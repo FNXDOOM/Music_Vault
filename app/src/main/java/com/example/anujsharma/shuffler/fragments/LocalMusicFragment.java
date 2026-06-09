@@ -144,9 +144,9 @@ public class LocalMusicFragment extends Fragment {
                 File file = new File(path);
                 if (!file.exists()) continue;
 
-                // duration stored in seconds in Song's local constructor
-                int durationSec = (int) (durationMs / 1000);
-                Song song = new Song(title, artist, genre, album, durationSec, file);
+                // Store duration in milliseconds directly so getDurationMs() works for all song lengths.
+                // The Song(local) constructor takes int; ms values for typical songs (<596 hrs) fit in int.
+                Song song = new Song(title, artist, genre, album, (int) durationMs, file);
                 // Temporarily store the _ID in the videoId field so buildPlaylist can construct the content:// URI
                 song.setVideoId(String.valueOf(id));
                 result.add(song);
@@ -165,7 +165,7 @@ public class LocalMusicFragment extends Fragment {
             // so ExoPlayerService can load it directly via ExoPlayer.
             Song copy = new Song(
                     s.getTitle(), s.getArtist(), s.getGenre(),
-                    s.getAlbum(), (int) s.getDuration(), s.getSongFile()
+                    s.getAlbum(), (int) s.getDuration() /* already in ms */, s.getSongFile()
             );
             // Construct the proper content:// URI instead of file:// to bypass Scoped Storage limits
             try {

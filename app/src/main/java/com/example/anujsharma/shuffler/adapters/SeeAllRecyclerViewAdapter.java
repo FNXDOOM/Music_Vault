@@ -174,7 +174,8 @@ public class SeeAllRecyclerViewAdapter extends RecyclerView.Adapter<RecyclerView
             case Constants.TYPE_PLAYLIST:
                 Playlist playlist = playlists.get(position);
                 final EachPlaylistViewHolder playlistViewHolder = (EachPlaylistViewHolder) holder;
-                playlistViewHolder.tvPlaylistUser.setText(playlist.getUser().getUsername());
+                playlistViewHolder.tvPlaylistUser.setText(
+                        playlist.getUser() != null ? playlist.getUser().getUsername() : "");
                 playlistViewHolder.tvPlaylistTitle.setText(playlist.getTitle());
                 String tracksCount = playlist.getTracksCount() > 1 ? playlist.getTracksCount() + " TRACKS" : playlist.getTracksCount() + " TRACK";
                 playlistViewHolder.tvPlaylistsTracksCount.setText(tracksCount);

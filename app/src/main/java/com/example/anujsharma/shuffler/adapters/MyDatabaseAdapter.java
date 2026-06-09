@@ -98,7 +98,9 @@ public class MyDatabaseAdapter {
         String[] selectionArgs = null;
         if (id == null) selection = null;
         else selectionArgs = new String[]{String.valueOf(id)};
-        return sqLiteDatabase.delete(MySqliteHelper.HISTORY_TABLE, selection, selectionArgs);
+        long rows = sqLiteDatabase.delete(MySqliteHelper.HISTORY_TABLE, selection, selectionArgs);
+        sqLiteDatabase.close();
+        return rows;
     }
 
     public long containsInHistory(long id) {
@@ -107,10 +109,10 @@ public class MyDatabaseAdapter {
         String[] selectionArgs = {String.valueOf(id)};
         String selection = MySqliteHelper.ID + " = ?";
         Cursor cursor = sqLiteDatabase.query(MySqliteHelper.HISTORY_TABLE, columns, selection, selectionArgs, null, null, null);
-
+        long count = cursor.getCount(); // FIX: read count before closing cursor
         cursor.close();
         sqLiteDatabase.close();
-        return cursor.getCount();
+        return count;
     }
 
     public List<Playlist> getPlaylistsList() {

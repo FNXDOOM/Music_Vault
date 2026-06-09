@@ -239,9 +239,25 @@ public class SearchFragment extends Fragment implements RequestCallback {
                         switch (history.getType()) {
                             case Constants.TYPE_TRACK:
                                 String sourceId = history.getSourceId();
-                                tracksDao.getTrackWithId((sourceId != null && !sourceId.isEmpty())
-                                        ? sourceId
-                                        : String.valueOf(history.getId()));
+                                if (sourceId != null && !sourceId.isEmpty()) {
+                                    // YouTube track — we already have all we need in HybridModel.
+                                    // sourceId == videoId. Don't hit the (SoundCloud) backend;
+                                    // just construct a Song and play it directly.
+                                    Song historySong = new Song(
+                                            sourceId,                   // videoId (stored as permalink)
+                                            history.getName(),          // title
+                                            history.getSongArtist(),    // artist
+                                            0L,                         // durationMs unknown until resolved
+                                            history.getArtworkUrl()     // artwork
+                                    );
+                                    ArrayList<Song> histSongs = new ArrayList<>();
+                                    histSongs.add(historySong);
+                                    Playlist histPlaylist = new Playlist(histSongs, "History");
+                                    ((MainActivity) getActivity()).playSongInMainActivity(0, histPlaylist);
+                                } else {
+                                    // Legacy SoundCloud entry — fall back to API lookup by numeric id
+                                    tracksDao.getTrackWithId(String.valueOf(history.getId()));
+                                }
                                 break;
                             case Constants.TYPE_USER:
                                 usersDao.getUserWithId(String.valueOf(history.getId()));

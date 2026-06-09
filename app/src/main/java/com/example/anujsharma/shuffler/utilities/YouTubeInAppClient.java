@@ -9,419 +9,407 @@ import org.json.JSONObject;
 
 import java.net.URLEncoder;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Iterator;
+ import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
-import javax.net.ssl.SSLHandshakeException;
-
+import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
+import okhttp3.RequestBody;
 import okhttp3.Response;
 
 /**
- * In-app YouTube client with no local backend dependency.
- * Uses public Piped-compatible endpoints to fetch search and stream URLs.
+ * In-app YouTube client — no local backend dependency.
+ * Stream resolution priority:
+ *   1. YouTube Innertube /v1/player (ANDROID client — most reliable, no sign-in)
+ *   2. Piped public API  (fallback)
+ *   3. Invidious public API (final fallback)
  */
 public class YouTubeInAppClient {
-    private static final long STREAM_CACHE_TTL_MS = 20L * 60L * 1000L;
 
-    // Public youtubei key commonly used by Android clients.
-    private static final String YOUTUBEI_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-    private static final String YOUTUBEI_SEARCH_URL =
-            "https://www.youtube.com/youtubei/v1/search?key=" + YOUTUBEI_KEY;
-    private static final String YOUTUBEI_PLAYER_URL =
-            "https://youtubei.googleapis.com/youtubei/v1/player?key=" + YOUTUBEI_KEY;
+    private static final long STREAM_CACHE_TTL_MS = 20L * 60L * 1000L; // 20 min
 
-    private static final String[] API_BASES = new String[]{
+    // ── Innertube (YouTube internal API) ──────────────────────────────────────
+    private static final String INNERTUBE_SEARCH_URL =
+            "https://www.youtube.com/youtubei/v1/search";
+    private static final String INNERTUBE_PLAYER_URL =
+            "https://www.youtube.com/youtubei/v1/player";
+    // ANDROID client key — public, widely used, returns direct stream URLs without cipher
+    private static final String INNERTUBE_KEY = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w";
+    private static final String ANDROID_CLIENT_VERSION = "18.11.34";
+    private static final int ANDROID_SDK_VERSION = 30;
+
+    // ── Piped fallback ────────────────────────────────────────────────────────
+    private static final String[] PIPED_BASES = {
             "https://pipedapi.adminforge.de",
-            "https://pipedapi.drgns.space",
             "https://pipedapi.kavin.rocks",
-            "https://pipedapi.syncpundit.io",
-            "https://api.piped.yt"
+            "https://pipedapi.drgns.space",
+            "https://api.piped.yt",
     };
-    private static final String[] INVIDIOUS_BASES = new String[]{
+
+    // ── Invidious fallback ────────────────────────────────────────────────────
+    private static final String[] INVIDIOUS_BASES = {
             "https://invidious.fdn.fr",
-            "https://invidious.privacyredirect.com",
-            "https://vid.puffyan.us"
+            "https://inv.thepixora.com",
+            "https://invidious.io.lol",
     };
 
-    private final OkHttpClient httpClient = new OkHttpClient();
-    private final Map<String, CachedStream> streamCache = new HashMap<>();
+    private final OkHttpClient httpClient = new OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .build();
+    // Static so all instances (MainActivity, ViewSongActivity, fragments) share one cache.
+    private static final Map<String, CachedStream> streamCache = new java.util.concurrent.ConcurrentHashMap<>();
 
+    // ═════════════════════════════ PUBLIC API ════════════════════════════════
+
+    /** Search YouTube for songs matching {@code query}. */
     public ArrayList<Song> searchSongs(String query, int limit) throws Exception {
+        // Try Innertube first (most reliable)
         try {
-            return searchSongsFromYoutubei(query, limit);
-        } catch (Exception ignored) {
-            // fallback below
+            return searchViaInnertube(query, limit);
+        } catch (Exception e) {
+            System.out.println( "Innertube search failed, trying Piped: " + e.getMessage());
         }
-
+        // Piped fallback
         String encoded = URLEncoder.encode(query, "UTF-8");
-        Exception last = null;
-        for (String base : API_BASES) {
+        for (String base : PIPED_BASES) {
             try {
-                String url = base + "/search?q=" + encoded + "&filter=music_songs";
-                Request request = new Request.Builder().url(url).build();
-                try (Response response = httpClient.newCall(request).execute()) {
-                    if (!response.isSuccessful() || response.body() == null) continue;
-
-                    String json = response.body().string();
-                    JSONObject root = new JSONObject(json);
-                    JSONArray items = root.optJSONArray("items");
-                    if (items == null) continue;
-
-                    ArrayList<Song> result = new ArrayList<>();
-                    for (int i = 0; i < items.length() && result.size() < limit; i++) {
-                        JSONObject item = items.optJSONObject(i);
-                        if (item == null) continue;
-
-                        String type = item.optString("type", "");
-                        if (!"stream".equalsIgnoreCase(type)) continue;
-
-                        String videoId = item.optString("id", "");
-                        if (videoId.isEmpty()) {
-                            String urlField = item.optString("url", "");
-                            if (!urlField.isEmpty()) {
-                                Uri uri = Uri.parse("https://youtube.com" + urlField);
-                                videoId = uri.getQueryParameter("v");
-                            }
-                        }
-                        if (videoId == null || videoId.isEmpty()) continue;
-
-                        String title = item.optString("title", "Unknown");
-                        String artist = item.optString("uploaderName", "");
-                        long durationMs = item.optLong("duration", 0) * 1000L;
-                        String artworkUrl = item.optString("thumbnail", "");
-                        Song song = new Song(videoId, title, artist, durationMs, artworkUrl);
-                        result.add(song);
-                    }
-                    if (!result.isEmpty()) return result;
-                }
-            } catch (Exception e) {
-                last = e;
-            }
+                ArrayList<Song> result = searchViaPiped(base, encoded, limit);
+                if (!result.isEmpty()) return result;
+            } catch (Exception ignored) {}
         }
-        if (last != null) throw last;
         return new ArrayList<>();
     }
 
+    /** Resolve the best audio stream URL for {@code videoId}. Uses a 20-min cache. */
     public String resolveBestAudioStreamUrl(String videoId) throws Exception {
         CachedStream cached = streamCache.get(videoId);
-        if (cached != null && !cached.isExpired()) {
-            return cached.url;
-        }
+        if (cached != null && !cached.isExpired()) return cached.url;
 
-        /*
+        // 1. Try Innertube ANDROID client — gives direct, non-ciphered URLs
         try {
-            String resolved = resolveBestAudioStreamUrlFromYoutubei(videoId);
-            putCached(videoId, resolved);
-            return resolved;
-        } catch (Exception ignored) {
-            // fallback below
+            String url = resolveViaInnertubeAndroid(videoId);
+            if (url != null && !url.isEmpty()) {
+                putCached(videoId, url);
+                return url;
+            }
+        } catch (Exception e) {
+            System.out.println( "Innertube stream resolve failed: " + e.getMessage());
         }
-        */
 
-        Exception last = null;
-        Exception lastNonTlsError = null;
-        for (String base : API_BASES) {
+        // 2. Try Piped
+        for (String base : PIPED_BASES) {
             try {
-                String url = base + "/streams/" + videoId;
-                Request request = new Request.Builder().url(url).build();
-                try (Response response = httpClient.newCall(request).execute()) {
-                    if (!response.isSuccessful() || response.body() == null) continue;
-                    String json = response.body().string();
-                    JSONObject root = new JSONObject(json);
-                    JSONArray audioStreams = root.optJSONArray("audioStreams");
-                    if (audioStreams == null || audioStreams.length() == 0) continue;
-
-                    int bestIndex = -1;
-                    int bestBitrate = Integer.MIN_VALUE;
-                    for (int i = 0; i < audioStreams.length(); i++) {
-                        JSONObject a = audioStreams.optJSONObject(i);
-                        if (a == null) continue;
-                        int bitrate = a.optInt("bitrate", 0);
-                        String streamUrl = a.optString("url", "");
-                        if (streamUrl == null || streamUrl.isEmpty()) continue;
-                        if (bitrate > bestBitrate) {
-                            bestBitrate = bitrate;
-                            bestIndex = i;
-                        }
-                    }
-
-                    if (bestIndex >= 0) {
-                        String streamUrl = audioStreams.getJSONObject(bestIndex).optString("url", "");
-                        if (streamUrl != null && !streamUrl.isEmpty()) {
-                            putCached(videoId, streamUrl);
-                            return streamUrl;
-                        }
-                    }
+                String url = resolveViaPiped(base, videoId);
+                if (url != null && !url.isEmpty()) {
+                    putCached(videoId, url);
+                    return url;
                 }
-            } catch (SSLHandshakeException ssl) {
-                // Some public mirror cert chains expire occasionally; skip this host and try next.
-                last = ssl;
-            } catch (Exception e) {
-                last = e;
-                lastNonTlsError = e;
-            }
+            } catch (Exception ignored) {}
         }
-        if (lastNonTlsError != null) throw lastNonTlsError;
-        if (last != null) {
-            try {
-                String inv = resolveBestAudioStreamUrlFromInvidious(videoId);
-                putCached(videoId, inv);
-                return inv;
-            } catch (Exception ignored) {
-                // fall through and throw last
-            }
-            throw last;
-        }
-        try {
-            String inv = resolveBestAudioStreamUrlFromInvidious(videoId);
-            putCached(videoId, inv);
-            return inv;
-        } catch (Exception ignored) {
-            // fall through
-        }
-        throw new IllegalStateException(String.format(Locale.US, "Unable to resolve stream URL for %s", videoId));
-    }
 
-    private String resolveBestAudioStreamUrlFromInvidious(String videoId) throws Exception {
-        Exception last = null;
+        // 3. Try Invidious (proxy URL)
         for (String base : INVIDIOUS_BASES) {
             try {
-                String url = base + "/api/v1/videos/" + videoId;
-                Request request = new Request.Builder().url(url).build();
-                try (Response response = httpClient.newCall(request).execute()) {
-                    if (!response.isSuccessful() || response.body() == null) continue;
-                    JSONObject root = new JSONObject(response.body().string());
-                    JSONArray adaptive = root.optJSONArray("adaptiveFormats");
-                    if (adaptive == null || adaptive.length() == 0) continue;
-                    int bestIndex = -1;
-                    int bestBitrate = Integer.MIN_VALUE;
-                    for (int i = 0; i < adaptive.length(); i++) {
-                        JSONObject f = adaptive.optJSONObject(i);
-                        if (f == null) continue;
-                        String type = f.optString("type", "");
-                        if (!type.startsWith("audio/")) continue;
-                        String streamUrl = f.optString("url", "");
-                        if (streamUrl == null || streamUrl.isEmpty()) continue;
-                        int bitrate = f.optInt("bitrate", 0);
-                        if (bitrate > bestBitrate) {
-                            bestBitrate = bitrate;
-                            bestIndex = i;
-                        }
-                    }
-                    if (bestIndex >= 0) {
-                        String streamUrl = adaptive.getJSONObject(bestIndex).optString("url", "");
-                        if (streamUrl != null && !streamUrl.isEmpty()) return streamUrl;
-                    }
+                String url = resolveViaInvidious(base, videoId);
+                if (url != null && !url.isEmpty()) {
+                    putCached(videoId, url);
+                    return url;
                 }
-            } catch (Exception e) {
-                last = e;
-            }
+            } catch (Exception ignored) {}
         }
-        if (last != null) throw last;
-        throw new IllegalStateException("Invidious fallback failed");
+
+        throw new IllegalStateException("All stream resolution methods failed for " + videoId);
     }
 
-    public synchronized void invalidateStream(String videoId) {
+    public void invalidateStream(String videoId) {
         streamCache.remove(videoId);
     }
 
-    public synchronized void prefetchStream(String videoId) {
+    /** Best-effort background prefetch — never throws. */
+    public void prefetchStream(String videoId) {
         if (videoId == null || videoId.isEmpty()) return;
         CachedStream cached = streamCache.get(videoId);
         if (cached != null && !cached.isExpired()) return;
-        try {
-            resolveBestAudioStreamUrl(videoId);
-        } catch (Exception ignored) {
-            // best-effort prefetch
-        }
+        try { resolveBestAudioStreamUrl(videoId); } catch (Exception ignored) {}
     }
 
-    private ArrayList<Song> searchSongsFromYoutubei(String query, int limit) throws Exception {
-        JSONObject payload = new JSONObject();
-        JSONObject context = new JSONObject();
-        JSONObject client = new JSONObject();
-        client.put("hl", "en");
-        client.put("gl", "US");
-        client.put("clientName", "WEB");
-        client.put("clientVersion", "2.20240709.01.00");
-        context.put("client", client);
-        payload.put("context", context);
+    // ═════════════════════════ SEARCH IMPLEMENTATIONS ═══════════════════════
+
+    private ArrayList<Song> searchViaInnertube(String query, int limit) throws Exception {
+        JSONObject payload = buildInnertubeContext("WEB", "2.20240709.01.00");
         payload.put("query", query);
 
-        okhttp3.RequestBody body = okhttp3.RequestBody.create(
-                payload.toString(), okhttp3.MediaType.parse("application/json")
-        );
-        Request request = new Request.Builder()
-                .url(YOUTUBEI_SEARCH_URL)
-                .post(body)
-                .header("Content-Type", "application/json")
-                .build();
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful() || response.body() == null) {
-                throw new IllegalStateException("youtubei search failed: " + response.code());
+        String json = postJson(INNERTUBE_SEARCH_URL + "?key=" + INNERTUBE_KEY, payload.toString());
+        JSONObject root = new JSONObject(json);
+
+        ArrayList<JSONObject> renderers = new ArrayList<>();
+        collectVideoRenderers(root, renderers);
+
+        ArrayList<Song> songs = new ArrayList<>();
+        for (JSONObject vr : renderers) {
+            if (songs.size() >= limit) break;
+            String videoId = vr.optString("videoId", "");
+            if (videoId.isEmpty()) continue;
+
+            String title = extractText(vr.optJSONObject("title"));
+            String artist = extractText(vr.optJSONObject("ownerText"));
+            long durationMs = parseDurationMs(extractText(vr.optJSONObject("lengthText")));
+            String artwork = extractLastThumbnailUrl(vr.optJSONObject("thumbnail"));
+            songs.add(new Song(videoId, title, artist, durationMs, artwork));
+        }
+        return songs;
+    }
+
+    private ArrayList<Song> searchViaPiped(String base, String encodedQuery, int limit) throws Exception {
+        String url = base + "/search?q=" + encodedQuery + "&filter=music_songs";
+        Request req = new Request.Builder().url(url).build();
+        try (Response resp = httpClient.newCall(req).execute()) {
+            if (!resp.isSuccessful() || resp.body() == null) return new ArrayList<>();
+            JSONObject root = new JSONObject(resp.body().string());
+            JSONArray items = root.optJSONArray("items");
+            if (items == null) return new ArrayList<>();
+
+            ArrayList<Song> result = new ArrayList<>();
+            for (int i = 0; i < items.length() && result.size() < limit; i++) {
+                JSONObject item = items.optJSONObject(i);
+                if (item == null || !"stream".equalsIgnoreCase(item.optString("type"))) continue;
+                String videoId = item.optString("id", "");
+                if (videoId.isEmpty()) {
+                    String urlField = item.optString("url", "");
+                    if (!urlField.isEmpty()) {
+                        Uri uri = Uri.parse("https://youtube.com" + urlField);
+                        videoId = uri.getQueryParameter("v");
+                    }
+                }
+                if (videoId == null || videoId.isEmpty()) continue;
+                result.add(new Song(
+                        videoId,
+                        item.optString("title", "Unknown"),
+                        item.optString("uploaderName", ""),
+                        item.optLong("duration", 0) * 1000L,
+                        item.optString("thumbnail", "")
+                ));
             }
-            String json = response.body().string();
-            JSONObject root = new JSONObject(json);
-
-            ArrayList<JSONObject> videoRenderers = new ArrayList<>();
-            collectVideoRenderers(root, videoRenderers);
-
-            ArrayList<Song> songs = new ArrayList<>();
-            for (JSONObject vr : videoRenderers) {
-                if (songs.size() >= limit) break;
-                String videoId = vr.optString("videoId", "");
-                if (videoId.isEmpty()) continue;
-
-                String title = "";
-                JSONObject titleObj = vr.optJSONObject("title");
-                if (titleObj != null) {
-                    JSONArray runs = titleObj.optJSONArray("runs");
-                    if (runs != null && runs.length() > 0) {
-                        title = runs.optJSONObject(0).optString("text", "");
-                    } else {
-                        title = titleObj.optString("simpleText", "");
-                    }
-                }
-
-                String artist = "";
-                JSONObject ownerObj = vr.optJSONObject("ownerText");
-                if (ownerObj != null) {
-                    JSONArray runs = ownerObj.optJSONArray("runs");
-                    if (runs != null && runs.length() > 0) {
-                        artist = runs.optJSONObject(0).optString("text", "");
-                    } else {
-                        artist = ownerObj.optString("simpleText", "");
-                    }
-                }
-
-                long durationMs = 0L;
-                JSONObject lengthObj = vr.optJSONObject("lengthText");
-                String length = "";
-                if (lengthObj != null) {
-                    JSONArray runs = lengthObj.optJSONArray("runs");
-                    if (runs != null && runs.length() > 0) {
-                        length = runs.optJSONObject(0).optString("text", "");
-                    } else {
-                        length = lengthObj.optString("simpleText", "");
-                    }
-                }
-                if (!length.isEmpty()) {
-                    String[] parts = length.split(":");
-                    if (parts.length == 2) {
-                        durationMs = (Long.parseLong(parts[0]) * 60L + Long.parseLong(parts[1])) * 1000L;
-                    } else if (parts.length == 3) {
-                        durationMs = (Long.parseLong(parts[0]) * 3600L
-                                + Long.parseLong(parts[1]) * 60L
-                                + Long.parseLong(parts[2])) * 1000L;
-                    }
-                }
-
-                String artwork = "";
-                JSONObject thumbObj = vr.optJSONObject("thumbnail");
-                if (thumbObj != null) {
-                    JSONArray thumbs = thumbObj.optJSONArray("thumbnails");
-                    if (thumbs != null && thumbs.length() > 0) {
-                        artwork = thumbs.optJSONObject(thumbs.length() - 1).optString("url", "");
-                    }
-                }
-
-                songs.add(new Song(videoId, title, artist, durationMs, artwork));
-            }
-            return songs;
+            return result;
         }
     }
 
-    private String resolveBestAudioStreamUrlFromYoutubei(String videoId) throws Exception {
-        JSONObject payload = new JSONObject();
+    // ════════════════════════ STREAM IMPLEMENTATIONS ════════════════════════
+
+    private String resolveViaInnertubeAndroid(String videoId) throws Exception {
+        // ANDROID client — returns direct, non-ciphered adaptive format URLs
+        JSONObject payload = buildInnertubeContext("ANDROID", ANDROID_CLIENT_VERSION);
+        // Add Android-specific fields
+        JSONObject clientNode = payload.getJSONObject("context").getJSONObject("client");
+        clientNode.put("androidSdkVersion", ANDROID_SDK_VERSION);
+        clientNode.put("userAgent",
+                "com.google.android.youtube/" + ANDROID_CLIENT_VERSION
+                        + " (Linux; U; Android " + ANDROID_SDK_VERSION + ") gzip");
         payload.put("videoId", videoId);
-        JSONObject context = new JSONObject();
-        JSONObject client = new JSONObject();
-        client.put("hl", "en");
-        client.put("gl", "US");
-        client.put("clientName", "ANDROID");
-        client.put("clientVersion", "16.20");
-        context.put("client", client);
-        payload.put("context", context);
+        payload.put("racyCheckOk", true);
+        payload.put("contentCheckOk", true);
 
-        okhttp3.RequestBody body = okhttp3.RequestBody.create(
-                payload.toString(), okhttp3.MediaType.parse("application/json")
-        );
-        Request request = new Request.Builder()
-                .url(YOUTUBEI_PLAYER_URL)
-                .post(body)
-                .header("Content-Type", "application/json")
-                .build();
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful() || response.body() == null) {
-                throw new IllegalStateException("youtubei player failed: " + response.code());
-            }
-            String json = response.body().string();
-            JSONObject root = new JSONObject(json);
-            JSONObject streamingData = root.optJSONObject("streamingData");
-            if (streamingData == null) throw new IllegalStateException("No streamingData in youtubei player response");
-            JSONArray adaptive = streamingData.optJSONArray("adaptiveFormats");
-            if (adaptive == null || adaptive.length() == 0) {
-                throw new IllegalStateException("No adaptiveFormats in youtubei player response");
-            }
+        String json = postJson(INNERTUBE_PLAYER_URL + "?key=" + INNERTUBE_KEY, payload.toString());
+        JSONObject root = new JSONObject(json);
 
+        // Check playability status
+        JSONObject status = root.optJSONObject("playabilityStatus");
+        if (status != null) {
+            String statusStr = status.optString("status", "");
+            if ("ERROR".equals(statusStr) || "LOGIN_REQUIRED".equals(statusStr)
+                    || "UNPLAYABLE".equals(statusStr)) {
+                throw new IllegalStateException("Innertube: " + statusStr
+                        + " - " + status.optString("reason", ""));
+            }
+        }
+
+        JSONObject streamingData = root.optJSONObject("streamingData");
+        if (streamingData == null) throw new IllegalStateException("No streamingData");
+
+        JSONArray adaptive = streamingData.optJSONArray("adaptiveFormats");
+        if (adaptive == null || adaptive.length() == 0)
+            throw new IllegalStateException("No adaptiveFormats");
+
+        // Pick highest-bitrate audio-only format
+        int bestIndex = -1;
+        int bestBitrate = -1;
+        for (int i = 0; i < adaptive.length(); i++) {
+            JSONObject f = adaptive.optJSONObject(i);
+            if (f == null) continue;
+            String mimeType = f.optString("mimeType", "");
+            if (!mimeType.startsWith("audio/")) continue;
+            String directUrl = f.optString("url", "");
+            if (directUrl.isEmpty()) continue; // skip if ciphered
+            int bitrate = f.optInt("bitrate", 0);
+            if (bitrate > bestBitrate) {
+                bestBitrate = bitrate;
+                bestIndex = i;
+            }
+        }
+        if (bestIndex < 0) throw new IllegalStateException("No direct audio URL in adaptiveFormats");
+        return adaptive.getJSONObject(bestIndex).getString("url");
+    }
+
+    private String resolveViaPiped(String base, String videoId) throws Exception {
+        String url = base + "/streams/" + videoId;
+        Request req = new Request.Builder().url(url).build();
+        try (Response resp = httpClient.newCall(req).execute()) {
+            if (!resp.isSuccessful() || resp.body() == null) return null;
+            JSONObject root = new JSONObject(resp.body().string());
+            JSONArray streams = root.optJSONArray("audioStreams");
+            if (streams == null || streams.length() == 0) return null;
+
+            String best = null;
+            int bestBitrate = -1;
+            for (int i = 0; i < streams.length(); i++) {
+                JSONObject s = streams.optJSONObject(i);
+                if (s == null) continue;
+                int bitrate = s.optInt("bitrate", 0);
+                String streamUrl = s.optString("url", "");
+                if (!streamUrl.isEmpty() && bitrate > bestBitrate) {
+                    bestBitrate = bitrate;
+                    best = streamUrl;
+                }
+            }
+            return best;
+        }
+    }
+
+    private String resolveViaInvidious(String base, String videoId) throws Exception {
+        String url = base + "/api/v1/videos/" + videoId;
+        Request req = new Request.Builder().url(url).build();
+        try (Response resp = httpClient.newCall(req).execute()) {
+            if (!resp.isSuccessful() || resp.body() == null) return null;
+            JSONObject root = new JSONObject(resp.body().string());
+            JSONArray adaptive = root.optJSONArray("adaptiveFormats");
+            if (adaptive == null || adaptive.length() == 0) return null;
+
+            // Try to find a format with a direct URL first; fallback to proxy
             int bestIndex = -1;
-            int bestBitrate = Integer.MIN_VALUE;
+            int bestBitrate = -1;
+            int bestItag = -1;
             for (int i = 0; i < adaptive.length(); i++) {
                 JSONObject f = adaptive.optJSONObject(i);
                 if (f == null) continue;
-                if (f.optInt("audioChannels", 0) <= 0) continue;
-                String url = f.optString("url", "");
-                if (url == null || url.isEmpty()) continue;
-                int bitrate = f.optInt("bitrate", 0);
+                String type = f.optString("type", "");
+                if (!type.startsWith("audio/")) continue;
+                int bitrate = 0;
+                try { bitrate = Integer.parseInt(f.optString("bitrate", "0")); } catch (Exception ignored) {}
                 if (bitrate > bestBitrate) {
-                    bestBitrate = bitrate;
-                    bestIndex = i;
+                    // Prefer format with direct URL
+                    String directUrl = f.optString("url", "");
+                    if (!directUrl.isEmpty()) {
+                        bestBitrate = bitrate;
+                        bestIndex = i;
+                        bestItag = -1; // signal: use directUrl
+                    } else {
+                        // Note itag for proxy URL fallback
+                        int itag = 0;
+                        try { itag = Integer.parseInt(f.optString("itag", "0")); } catch (Exception ignored) {}
+                        if (itag > 0) {
+                            bestBitrate = bitrate;
+                            bestIndex = i;
+                            bestItag = itag;
+                        }
+                    }
                 }
             }
-            if (bestIndex < 0) throw new IllegalStateException("No direct audio url in adaptiveFormats");
-            return adaptive.getJSONObject(bestIndex).optString("url");
+            if (bestIndex < 0) return null;
+
+            // ALWAYS use Invidious proxy URL with local=true so it streams through their server.
+            // Direct URLs are IP-bound to the server that requested them and will 403 on the client.
+            int finalItag = bestItag > 0 ? bestItag : adaptive.getJSONObject(bestIndex).optInt("itag", 251);
+            return base + "/latest_version?id=" + videoId + "&itag=" + finalItag + "&local=true";
         }
+    }
+
+    // ═════════════════════════════ HELPERS ══════════════════════════════════
+
+    private String postJson(String url, String body) throws Exception {
+        RequestBody rb = RequestBody.create(body, MediaType.parse("application/json"));
+        Request req = new Request.Builder()
+                .url(url)
+                .post(rb)
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0")
+                .header("Origin", "https://www.youtube.com")
+                .build();
+        try (Response resp = httpClient.newCall(req).execute()) {
+            if (!resp.isSuccessful() || resp.body() == null)
+                throw new IllegalStateException("HTTP " + resp.code() + " for " + url);
+            return resp.body().string();
+        }
+    }
+
+    private JSONObject buildInnertubeContext(String clientName, String clientVersion) throws Exception {
+        JSONObject client = new JSONObject();
+        client.put("hl", "en");
+        client.put("gl", "US");
+        client.put("clientName", clientName);
+        client.put("clientVersion", clientVersion);
+        JSONObject context = new JSONObject();
+        context.put("client", client);
+        JSONObject payload = new JSONObject();
+        payload.put("context", context);
+        return payload;
     }
 
     private void collectVideoRenderers(Object node, ArrayList<JSONObject> out) {
         if (node instanceof JSONObject) {
             JSONObject obj = (JSONObject) node;
-            JSONObject videoRenderer = obj.optJSONObject("videoRenderer");
-            if (videoRenderer != null) out.add(videoRenderer);
-
+            if (obj.has("videoRenderer")) out.add(obj.optJSONObject("videoRenderer"));
             Iterator<String> keys = obj.keys();
-            while (keys.hasNext()) {
-                String key = keys.next();
-                collectVideoRenderers(obj.opt(key), out);
-            }
+            while (keys.hasNext()) collectVideoRenderers(obj.opt(keys.next()), out);
         } else if (node instanceof JSONArray) {
             JSONArray arr = (JSONArray) node;
-            for (int i = 0; i < arr.length(); i++) {
-                collectVideoRenderers(arr.opt(i), out);
-            }
+            for (int i = 0; i < arr.length(); i++) collectVideoRenderers(arr.opt(i), out);
         }
     }
 
-    private synchronized void putCached(String videoId, String url) {
+    private String extractText(JSONObject obj) {
+        if (obj == null) return "";
+        JSONArray runs = obj.optJSONArray("runs");
+        if (runs != null && runs.length() > 0) {
+            JSONObject run = runs.optJSONObject(0);
+            return run != null ? run.optString("text", "") : "";
+        }
+        return obj.optString("simpleText", "");
+    }
+
+    private long parseDurationMs(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        try {
+            String[] parts = text.split(":");
+            if (parts.length == 2) return (Long.parseLong(parts[0]) * 60 + Long.parseLong(parts[1])) * 1000;
+            if (parts.length == 3) return (Long.parseLong(parts[0]) * 3600 + Long.parseLong(parts[1]) * 60 + Long.parseLong(parts[2])) * 1000;
+        } catch (Exception ignored) {}
+        return 0;
+    }
+
+    private String extractLastThumbnailUrl(JSONObject thumbObj) {
+        if (thumbObj == null) return "";
+        JSONArray thumbs = thumbObj.optJSONArray("thumbnails");
+        if (thumbs != null && thumbs.length() > 0) {
+            JSONObject last = thumbs.optJSONObject(thumbs.length() - 1);
+            return last != null ? last.optString("url", "") : "";
+        }
+        return "";
+    }
+
+    private void putCached(String videoId, String url) {
         if (videoId == null || videoId.isEmpty() || url == null || url.isEmpty()) return;
         streamCache.put(videoId, new CachedStream(url, System.currentTimeMillis() + STREAM_CACHE_TTL_MS));
     }
 
     private static class CachedStream {
-        private final String url;
-        private final long expiresAtMs;
-
-        private CachedStream(String url, long expiresAtMs) {
-            this.url = url;
-            this.expiresAtMs = expiresAtMs;
-        }
-
-        private boolean isExpired() {
-            return System.currentTimeMillis() >= expiresAtMs;
-        }
+        final String url;
+        final long expiresAtMs;
+        CachedStream(String url, long expiresAtMs) { this.url = url; this.expiresAtMs = expiresAtMs; }
+        boolean isExpired() { return System.currentTimeMillis() >= expiresAtMs; }
     }
 }

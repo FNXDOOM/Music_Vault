@@ -11,6 +11,8 @@ import android.os.Binder;
 import android.os.IBinder;
 import android.util.Log;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import androidx.annotation.Nullable;
 import androidx.annotation.OptIn;
 import androidx.media3.common.MediaItem;
@@ -35,8 +37,11 @@ public class ExoPlayerService extends Service {
     public static final String ACTION_PREVIOUS = "com.example.anujsharma.shuffler.ACTION_PREVIOUS";
     public static final String ACTION_PLAY_PAUSE = "com.example.anujsharma.shuffler.ACTION_PLAY_PAUSE";
     public static final String ACTION_STREAM_ERROR = "com.example.anujsharma.shuffler.ACTION_STREAM_ERROR";
+    // Broadcast sent when the current song index changes (so MainActivity mini-player can sync)
+    public static final String ACTION_SONG_CHANGED = "com.example.anujsharma.shuffler.ACTION_SONG_CHANGED";
     public static final String EXTRA_STREAM_URL = "stream_url";
     public static final String EXTRA_ERROR_POSITION = "error_position";
+    public static final String EXTRA_SONG_POSITION = "song_position";
 
     // FIX: expose a Binder so MainActivity can call play/pause/isPlaying directly on ExoPlayer
     private final IBinder binder = new ExoBinder();
@@ -53,6 +58,11 @@ public class ExoPlayerService extends Service {
     private SharedPreference pref;
     private Playlist currentPlaylist;
     private int currentPosition;
+    // AtomicBoolean so rapid double-swipes don't race past the flag check.
+    private final AtomicBoolean suppressNextTransitionBroadcast = new AtomicBoolean(false);
+    // Ordered list of stream URLs matching currentPlaylist.getSongs() order.
+    // Needed so seekToNextMediaItem / seekToPreviousMediaItem work across the full queue.
+    private final java.util.List<String> queueUrls = new java.util.ArrayList<>();
 
     // FIX: expose the underlying ExoPlayer instance so ViewSongActivity can call seekTo() and addListener()
     public ExoPlayer getPlayer() {
@@ -73,11 +83,38 @@ public class ExoPlayerService extends Service {
     }
 
     public void playNext() {
-        if (player != null) player.seekToNextMediaItem();
+        if (player == null) return;
+        // If the queue has more than one item already loaded, use ExoPlayer's built-in next.
+        if (player.getMediaItemCount() > 1 && player.hasNextMediaItem()) {
+            player.seekToNextMediaItem();
+            return;
+        }
+        // Otherwise ask MainActivity to resolve the next stream (single-item queue mode).
+        int nextPos = currentPosition + 1;
+        if (currentPlaylist != null && currentPlaylist.getSongs() != null
+                && nextPos < currentPlaylist.getSongs().size()) {
+            Intent i = new Intent(ACTION_SONG_CHANGED);
+            i.putExtra(EXTRA_SONG_POSITION, nextPos);
+            sendBroadcast(i);
+        }
     }
 
     public void playPrev() {
-        if (player != null) player.seekToPreviousMediaItem();
+        if (player == null) return;
+        if (player.getMediaItemCount() > 1 && player.hasPreviousMediaItem()) {
+            player.seekToPreviousMediaItem();
+            return;
+        }
+        int prevPos = currentPosition - 1;
+        if (currentPlaylist != null && currentPlaylist.getSongs() != null && prevPos >= 0) {
+            Intent i = new Intent(ACTION_SONG_CHANGED);
+            i.putExtra(EXTRA_SONG_POSITION, prevPos);
+            sendBroadcast(i);
+        }
+    }
+
+    public int getCurrentPosition() {
+        return currentPosition;
     }
 
     @Override
@@ -99,14 +136,24 @@ public class ExoPlayerService extends Service {
             @Override
             public void onMediaItemTransition(@Nullable MediaItem mediaItem, int reason) {
                 if (player == null) return;
+                // getAndSet(false) atomically reads-and-clears, preventing the
+                // race where two rapid loads both arm the flag but only one clear fires.
+                if (suppressNextTransitionBroadcast.getAndSet(false)) {
+                    return;
+                }
                 int idx = player.getCurrentMediaItemIndex();
                 currentPosition = idx;
                 pref.setCurrentPlayingSongPosition(idx);
+                // Broadcast so MainActivity mini-player updates its title
+                Intent songChanged = new Intent(ACTION_SONG_CHANGED);
+                songChanged.putExtra(EXTRA_SONG_POSITION, idx);
+                sendBroadcast(songChanged);
             }
 
             @Override
             public void onPlayerError(androidx.media3.common.PlaybackException error) {
                 if (player == null) return;
+                Log.e(TAG, "ExoPlayer error: " + error.getMessage(), error);
                 int idx = player.getCurrentMediaItemIndex();
                 Intent i = new Intent(ACTION_STREAM_ERROR);
                 i.putExtra(EXTRA_ERROR_POSITION, idx);
@@ -214,22 +261,28 @@ public class ExoPlayerService extends Service {
                 currentPosition = position;
                 if (playlist != null) pref.setCurrentPlaylist(playlist);
 
-                // Build MediaItem without explicit MIME type so ExoPlayer can sniff the format (could be mp4 or webm)
+                // Build MediaItem without explicit MIME type so ExoPlayer can sniff the format
                 MediaItem mediaItem = new MediaItem.Builder()
                         .setUri(Uri.parse(streamUrl))
                         .build();
 
+                // Suppress the spurious onMediaItemTransition(index=0) that ExoPlayer
+                // fires when we replace the media item.  We've already set currentPosition
+                // above so the broadcast would carry the wrong index.
+                suppressNextTransitionBroadcast.set(true);
+                player.stop();
+                player.clearMediaItems();
                 player.setMediaItem(mediaItem);
                 player.prepare();
                 player.setPlayWhenReady(true);
-                Log.d(TAG, "ExoPlayer prepared and set to play");
+                Log.d(TAG, "ExoPlayer prepared and set to play, position=" + position);
             }
         } else if (ACTION_NEXT.equals(action)) {
-            // Notification "next" button — advance to next track
-            if (player != null) player.seekToNextMediaItem();
+            // Notification "next" button
+            playNext();
         } else if (ACTION_PREVIOUS.equals(action)) {
-            // Notification "previous" button — go to previous track
-            if (player != null) player.seekToPreviousMediaItem();
+            // Notification "previous" button
+            playPrev();
         } else if (ACTION_PLAY_PAUSE.equals(action)) {
             // Notification play/pause button — toggle playback
             if (player != null) {

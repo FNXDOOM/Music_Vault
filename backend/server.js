@@ -16,9 +16,6 @@ app.use(express.json());
 const ytmusic = new YTMusic();
 let ytmusicInitialized = false;
 
-// youtubei.js (Innertube) for streaming URLs
-let innertube = null;
-
 async function ensureYTMusicInitialized() {
   if (!ytmusicInitialized) {
     await ytmusic.initialize();
@@ -26,23 +23,11 @@ async function ensureYTMusicInitialized() {
   }
 }
 
-async function ensureInnertube() {
-  if (!innertube) {
-    const { Innertube } = await import("youtubei.js");
-    innertube = await Innertube.create({
-      // Use ANDROID client — most reliable for getting stream URLs without sign-in
-      client_type: "ANDROID",
-    });
-  }
-  return innertube;
-}
-
 // Pre-warm on startup
 ensureYTMusicInitialized().catch(console.error);
-ensureInnertube().catch(console.error);
 
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", innertube: !!innertube, ytmusic: ytmusicInitialized });
+  res.json({ status: "ok", ytmusic: ytmusicInitialized });
 });
 
 app.get("/api/search", async (req, res) => {
@@ -86,14 +71,20 @@ app.get("/api/search", async (req, res) => {
   }
 });
 
+// ─── Stream endpoint ────────────────────────────────────────────────────────
+// Returns a proxy URL pointing back to this server's /api/song/:id/proxy.
+// This avoids YouTube 403 errors: YouTube signs stream URLs to the requesting
+// IP. If we returned the raw URL, the Android device (different IP) would get
+// a 403. Proxying through this server solves it.
+//
+// IMPORTANT for physical devices:
+//   Set BACKEND_HOST in .env to your PC's local WiFi IP, e.g.:
+//     BACKEND_HOST=192.168.1.5
+//   Then update Urls.java: YOUTUBE_BACKEND_BASE_URL = "http://192.168.1.5:3000/"
+// ────────────────────────────────────────────────────────────────────────────
 app.get("/api/song/:id/stream", async (req, res) => {
   try {
     const id = req.params.id;
-
-    // Use @distube/ytdl-core to proxy the audio stream directly.
-    // Returning a raw YouTube URL causes 403 because YouTube signs URLs
-    // to the server IP — playing them from a different IP (the device) fails.
-    // Proxying through the backend avoids this entirely.
     const ytdl = require("@distube/ytdl-core");
 
     const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${id}`);
@@ -106,12 +97,21 @@ app.get("/api/song/:id/stream", async (req, res) => {
       return res.status(404).json({ error: "No playable audio format found." });
     }
 
-    // Return the proxied stream URL pointing back to this server
-    const proxyUrl = `${req.protocol}://${req.get("host")}/api/song/${id}/proxy`;
+    // Build the proxy URL using BACKEND_HOST env var (for physical devices)
+    // or fall back to the request's Host header (works for emulator).
+    const host = process.env.BACKEND_HOST
+      ? `${process.env.BACKEND_HOST}:${port}`
+      : req.get("host");
+    const scheme = process.env.BACKEND_HOST ? "http" : req.protocol;
+    const proxyUrl = `${scheme}://${host}/api/song/${id}/proxy`;
+
+    console.log(`[stream] ${id} -> proxy ${proxyUrl} (format: ${format.mimeType})`);
+
     return res.json({
       url: proxyUrl,
       mimeType: format.mimeType || "audio/webm",
       bitrate: format.audioBitrate || 0,
+      // 6-hour TTL; ExoPlayer will just reconnect if it expires
       expiresAt: Date.now() + 6 * 60 * 60 * 1000,
     });
   } catch (error) {
@@ -120,30 +120,70 @@ app.get("/api/song/:id/stream", async (req, res) => {
   }
 });
 
-// Proxy endpoint — streams audio bytes from YouTube through this server.
-// ExoPlayer hits this URL; the server fetches from YouTube and pipes it back.
+// ─── Proxy endpoint ─────────────────────────────────────────────────────────
+// Streams audio bytes from YouTube through this server to the Android device.
+// Supports Range requests so ExoPlayer can seek efficiently.
+// ────────────────────────────────────────────────────────────────────────────
 app.get("/api/song/:id/proxy", async (req, res) => {
   try {
     const id = req.params.id;
     const ytdl = require("@distube/ytdl-core");
 
-    const stream = ytdl(`https://www.youtube.com/watch?v=${id}`, {
+    const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${id}`);
+    const format = ytdl.chooseFormat(info.formats, {
       quality: "highestaudio",
       filter: "audioonly",
     });
 
+    if (!format) {
+      return res.status(404).end();
+    }
+
+    const mimeType = format.mimeType
+      ? format.mimeType.split(";")[0]  // strip codec params for Content-Type header
+      : "audio/webm";
+
+    // Handle Range header from ExoPlayer (needed for seeking)
+    const rangeHeader = req.headers["range"];
+    const ytdlOptions = {
+      quality: "highestaudio",
+      filter: "audioonly",
+    };
+    if (rangeHeader) {
+      ytdlOptions.range = parseRange(rangeHeader);
+    }
+
+    res.setHeader("Content-Type", mimeType);
+    res.setHeader("Accept-Ranges", "bytes");
+    // Allow ExoPlayer to cache the stream
+    res.setHeader("Cache-Control", "no-transform");
+
+    const stream = ytdl.downloadFromInfo(info, ytdlOptions);
+
     stream.on("error", (err) => {
-      console.error("/api/song/:id/proxy stream error:", err.message);
+      console.error(`/api/song/${id}/proxy stream error:`, err.message);
       if (!res.headersSent) res.status(500).end();
     });
 
-    res.setHeader("Content-Type", "audio/webm");
+    if (rangeHeader) {
+      res.status(206);
+    }
     stream.pipe(res);
   } catch (error) {
     console.error("/api/song/:id/proxy error:", error.message);
     if (!res.headersSent) res.status(500).json({ error: error.message });
   }
 });
+
+// Parse a Range header like "bytes=0-1023" into { start, end }
+function parseRange(rangeHeader) {
+  const match = rangeHeader && rangeHeader.match(/bytes=(\d*)-(\d*)/);
+  if (!match) return undefined;
+  const start = match[1] ? parseInt(match[1], 10) : undefined;
+  const end = match[2] ? parseInt(match[2], 10) : undefined;
+  if (start === undefined && end === undefined) return undefined;
+  return { start, end };
+}
 
 app.get("/api/playlists", (_req, res) => {
   return res.json([]);
@@ -155,6 +195,11 @@ app.get("/api/playlist/:id", (req, res) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`Shuffler YouTube backend listening on http://localhost:${port}`);
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Shuffler backend listening on http://0.0.0.0:${port}`);
+  console.log(
+    process.env.BACKEND_HOST
+      ? `  Physical device URL: http://${process.env.BACKEND_HOST}:${port}/`
+      : `  Set BACKEND_HOST=<your-PC-WiFi-IP> in backend/.env for physical device support`
+  );
 });

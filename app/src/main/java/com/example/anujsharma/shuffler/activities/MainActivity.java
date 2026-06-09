@@ -88,9 +88,39 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
     private final android.content.BroadcastReceiver streamErrorReceiver = new android.content.BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (intent == null || !ExoPlayerService.ACTION_STREAM_ERROR.equals(intent.getAction())) return;
-            int failedPosition = intent.getIntExtra(ExoPlayerService.EXTRA_ERROR_POSITION, -1);
-            retryPlaybackForPosition(failedPosition);
+            if (intent == null) return;
+            String action = intent.getAction();
+            if (ExoPlayerService.ACTION_STREAM_ERROR.equals(action)) {
+                int failedPosition = intent.getIntExtra(ExoPlayerService.EXTRA_ERROR_POSITION, -1);
+                retryPlaybackForPosition(failedPosition);
+            } else if (ExoPlayerService.ACTION_SONG_CHANGED.equals(action)) {
+                // Service-driven song change (from notification next/prev or ExoPlayer internal transition)
+                int newPosition = intent.getIntExtra(ExoPlayerService.EXTRA_SONG_POSITION, -1);
+                if (newPosition >= 0 && currentPlaylist != null
+                        && currentPlaylist.getSongs() != null
+                        && newPosition < currentPlaylist.getSongs().size()) {
+                    currentSongPosition = newPosition;
+                    Song song = currentPlaylist.getSongs().get(newPosition);
+                    tvSongName.setText(song.getTitle());
+                    pref.setCurrentPlayingSongPosition(newPosition);
+                    // If the song already has its stream URL resolved, play immediately.
+                    // Otherwise kick off resolution (this handles notification next/prev).
+                    String url = song.getStreamUrl();
+                    if (url != null && !url.isEmpty()) {
+                        Intent updateIntent = new Intent(MainActivity.this, ExoPlayerService.class);
+                        updateIntent.setAction(ExoPlayerService.ACTION_UPDATE_STREAM);
+                        updateIntent.putExtra(ExoPlayerService.EXTRA_STREAM_URL, url);
+                        updateIntent.putExtra(Constants.CURRENT_PLAYING_SONG_POSITION, newPosition);
+                        startService(updateIntent);
+                    } else {
+                        String videoId = song.getVideoId();
+                        if (videoId != null && !videoId.isEmpty()) {
+                            mainSongLoader.setVisibility(View.VISIBLE);
+                            networkExecutor.execute(() -> fetchStreamAndPlay(videoId, song, currentPlaylist, newPosition));
+                        }
+                    }
+                }
+            }
         }
     };
     //binding
@@ -104,6 +134,7 @@ public class MainActivity extends AppCompatActivity implements RequestCallback {
         bindService(eIntent, exoConnection, Context.BIND_AUTO_CREATE);
         if (!streamErrorReceiverRegistered) {
             IntentFilter filter = new IntentFilter(ExoPlayerService.ACTION_STREAM_ERROR);
+            filter.addAction(ExoPlayerService.ACTION_SONG_CHANGED);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 registerReceiver(streamErrorReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
             } else {

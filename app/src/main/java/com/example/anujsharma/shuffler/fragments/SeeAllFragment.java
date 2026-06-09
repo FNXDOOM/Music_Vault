@@ -14,12 +14,14 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 import com.example.anujsharma.shuffler.R;
+import com.example.anujsharma.shuffler.activities.MainActivity;
 import com.example.anujsharma.shuffler.adapters.SeeAllRecyclerViewAdapter;
 import com.example.anujsharma.shuffler.models.Playlist;
 import com.example.anujsharma.shuffler.models.Song;
 import com.example.anujsharma.shuffler.models.User;
 import com.example.anujsharma.shuffler.utilities.Constants;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -63,7 +65,12 @@ public class SeeAllFragment extends Fragment {
         seeAllRecyclerViewAdapter = new SeeAllRecyclerViewAdapter(context, songs, users, playlists, new SeeAllRecyclerViewAdapter.ItemClickListener() {
             @Override
             public void onItemClick(View view, int position, int check) {
-
+                if (check == Constants.EACH_SONG_LAYOUT_CLICKED) {
+                    if (songs != null && !songs.isEmpty() && position >= 0 && position < songs.size()) {
+                        Playlist playlist = new Playlist(new ArrayList<>(songs), searchText != null ? searchText : "");
+                        ((MainActivity) getActivity()).playSongInMainActivity(position, playlist);
+                    }
+                }
             }
         }, TYPE);
     }
