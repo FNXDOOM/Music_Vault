@@ -63,6 +63,22 @@ public class YouTubeInAppClient {
             .build();
     // Static so all instances (MainActivity, ViewSongActivity, fragments) share one cache.
     private static final Map<String, CachedStream> streamCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private static String cachedVisitorData = null;
+
+    private synchronized String getVisitorData() {
+        if (cachedVisitorData != null && !cachedVisitorData.isEmpty()) return cachedVisitorData;
+        try {
+            JSONObject payload = buildInnertubeContext("WEB", "2.20240709.01.00");
+            payload.put("query", "a");
+            String json = postJson(INNERTUBE_SEARCH_URL + "?key=" + INNERTUBE_KEY, payload.toString());
+            JSONObject root = new JSONObject(json);
+            JSONObject responseContext = root.optJSONObject("responseContext");
+            if (responseContext != null) {
+                cachedVisitorData = responseContext.optString("visitorData", "");
+            }
+        } catch (Exception ignored) {}
+        return cachedVisitorData != null ? cachedVisitorData : "";
+    }
 
     // ═════════════════════════════ PUBLIC API ════════════════════════════════
 
@@ -90,9 +106,9 @@ public class YouTubeInAppClient {
         CachedStream cached = streamCache.get(videoId);
         if (cached != null && !cached.isExpired()) return cached.url;
 
-        // 1. Try Innertube ANDROID client — gives direct, non-ciphered URLs
+        // 1. Try Innertube client — gives direct, non-ciphered URLs
         try {
-            String url = resolveViaInnertubeAndroid(videoId);
+            String url = resolveViaInnertube(videoId);
             if (url != null && !url.isEmpty()) {
                 putCached(videoId, url);
                 return url;
@@ -201,15 +217,17 @@ public class YouTubeInAppClient {
 
     // ════════════════════════ STREAM IMPLEMENTATIONS ════════════════════════
 
-    private String resolveViaInnertubeAndroid(String videoId) throws Exception {
-        // ANDROID client — returns direct, non-ciphered adaptive format URLs
-        JSONObject payload = buildInnertubeContext("ANDROID", ANDROID_CLIENT_VERSION);
-        // Add Android-specific fields
+    private String resolveViaInnertube(String videoId) throws Exception {
+        // Using ANDROID_VR client as it currently bypasses PoToken requirements
+        JSONObject payload = buildInnertubeContext("ANDROID_VR", "1.48.27");
+        // Add specific fields
         JSONObject clientNode = payload.getJSONObject("context").getJSONObject("client");
-        clientNode.put("androidSdkVersion", ANDROID_SDK_VERSION);
-        clientNode.put("userAgent",
-                "com.google.android.youtube/" + ANDROID_CLIENT_VERSION
-                        + " (Linux; U; Android " + ANDROID_SDK_VERSION + ") gzip");
+        // Remove osName and osVersion if they were added for IOS
+        clientNode.put("userAgent", "Mozilla/5.0");
+        String visitorData = getVisitorData();
+        if (visitorData != null && !visitorData.isEmpty()) {
+            clientNode.put("visitorData", visitorData);
+        }
         payload.put("videoId", videoId);
         payload.put("racyCheckOk", true);
         payload.put("contentCheckOk", true);
